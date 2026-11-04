@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Status Dashboard</title>
+<style>
+  :root{
+    --bg:#0e0e0e; --panel:#161616; --line:#262626; --text:#e8e8e8; --mute:#8a8a8a;
+    --orange:#f08a24; --purple:#a06cf0; --blue:#4b9cf5; --gold:#e6b422; --green:#3fbf6f;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
+  header{padding:24px clamp(16px,4vw,48px);border-bottom:1px solid var(--line)}
+  h1{font-size:18px;font-weight:600}
+  main{flex:1;width:100%;max-width:900px;margin:0 auto;padding:32px clamp(16px,4vw,48px)}
+  footer{display:flex;justify-content:flex-end;gap:8px;padding:16px clamp(16px,4vw,48px);border-top:1px solid var(--line)}
+  button,select,input{font:inherit;color:inherit}
+  .btn{background:transparent;border:1px solid var(--line);padding:7px 14px;border-radius:8px;cursor:pointer;transition:.2s}
+  .btn:hover{border-color:#555;background:#1d1d1d}
+  .btn.primary{background:var(--text);color:#111;border-color:var(--text)}
+  .btn.primary:hover{background:#fff}
+  .subtle{font-size:13px;color:var(--mute)}
+  .hidden{display:none!important}
+  input[type=text],input[type=email],input[type=password],select{background:#0e0e0e;border:1px solid var(--line);border-radius:8px;padding:9px 12px;transition:border-color .2s}
+  input:focus,select:focus{outline:none;border-color:#666}
+  #addForm{display:flex;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:24px}
+  #addForm input{flex:2 1 200px} #addForm select{flex:1.5 1 200px}
+  #list{display:flex;flex-direction:column;gap:10px}
+  .item{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;transition:border-color .25s}
+  .item:hover{border-color:#3a3a3a}
+  .info{display:flex;flex-direction:column;gap:8px;min-width:0}
+  .name{font-weight:600;font-size:16px;word-break:break-word}
+  .badge{align-self:flex-start;font-size:12.5px;font-weight:600;padding:4px 11px;border-radius:999px;border:1px solid currentColor;background:color-mix(in srgb,currentColor 14%,transparent);transition:color .25s,background .25s}
+  .controls{display:flex;gap:8px;align-items:center}
+  .empty{padding:60px 0;text-align:center;color:var(--mute)}
+  #modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .25s;padding:16px}
+  #modal.open{opacity:1;pointer-events:auto}
+  #modal form{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;width:100%;max-width:340px;display:flex;flex-direction:column;gap:12px;transform:translateY(8px);transition:transform .25s}
+  #modal.open form{transform:none}
+  .err{color:#ff6b6b;font-size:13px;min-height:18px}
+  .row{display:flex;justify-content:space-between;gap:10px}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header><h1>Project Status Dashboard</h1></header>
+
+<main>
+  <form id="addForm" class="hidden">
+    <input type="text" id="newName" placeholder="Project name" required>
+    <select id="newStatus"></select>
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+  <div id="list"></div>
+</main>
+
+<footer>
+  <button class="btn subtle" id="loginBtn">Admin Login</button>
+  <button class="btn subtle hidden" id="logoutBtn">Log out</button>
+</footer>
+
+<div id="modal">
+  <form id="loginForm">
+    <strong>Admin login</strong>
+    <input type="email" id="email" placeholder="Email" autocomplete="username" required>
+    <input type="password" id="password" placeholder="Password" autocomplete="current-password" required>
+    <div class="err" id="loginErr"></div>
+    <div class="row">
+      <button type="button" class="btn" id="cancelLogin">Cancel</button>
+      <button type="submit" class="btn primary">Log in</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const ADMIN_EMAIL = "designer8fab@gmail.com";
+const ADMIN_PASS  = "Faboolux@999";
+const STORAGE_KEY = "projectStatusDashboard.v1";
+
+const STATUSES = [
+  { label: "Projects on xml checking @R&D",    color: "var(--orange)" },
+  { label: "Projects in xml check at factory", color: "var(--purple)" },
+  { label: "Checking completed",               color: "var(--blue)" },
+  { label: "Under production",                 color: "var(--gold)" },
+  { label: "Production completed",             color: "var(--green)" }
+];
+const colorOf = s => (STATUSES.find(x => x.label === s) || {color:"var(--mute)"}).color;
+const esc = t => String(t).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const optionsHTML = sel => STATUSES.map(s => `<option ${s.label===sel?"selected":""}>${s.label}</option>`).join("");
+const $ = id => document.getElementById(id);
+
+let isAdmin = false;
+let projects = load();
+
+function load(){
+  try{ return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+  catch(e){ return []; }
+}
+function save(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(projects)); }
+  catch(e){ alert("Could not save to this browser's storage."); }
+}
+
+function render(){
+  $("list").innerHTML = projects.length ? projects.map(p => `
+    <div class="item">
+      <div class="info">
+        <span class="name">${esc(p.name)}</span>
+        <span class="badge" style="color:${colorOf(p.status)}">${esc(p.status)}</span>
+      </div>
+      ${isAdmin ? `<div class="controls">
+        <select data-id="${p.id}">${optionsHTML(p.status)}</select>
+      </div>` : ""}
+    </div>`).join("")
+    : `<div class="empty">No projects yet.</div>`;
+  $("addForm").classList.toggle("hidden", !isAdmin);
+  $("loginBtn").classList.toggle("hidden", isAdmin);
+  $("logoutBtn").classList.toggle("hidden", !isAdmin);
+}
+
+/* Add project */
+$("newStatus").innerHTML = optionsHTML();
+$("addForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const name = $("newName").value.trim();
+  if(!name) return;
+  projects.unshift({ id: Date.now().toString(36), name, status: $("newStatus").value });
+  save(); render();
+  $("newName").value = "";
+});
+
+/* Change status */
+$("list").addEventListener("change", e => {
+  const id = e.target.dataset.id; if(!id) return;
+  const p = projects.find(x => x.id === id);
+  if(p){ p.status = e.target.value; save(); render(); }
+});
+
+/* Login */
+const modal = $("modal");
+$("loginBtn").onclick = () => { modal.classList.add("open"); $("email").focus(); };
+$("cancelLogin").onclick = () => modal.classList.remove("open");
+modal.addEventListener("click", e => { if(e.target === modal) modal.classList.remove("open"); });
+$("logoutBtn").onclick = () => { isAdmin = false; render(); };
+
+$("loginForm").addEventListener("submit", e => {
+  e.preventDefault();
+  if($("email").value.trim().toLowerCase() === ADMIN_EMAIL && $("password").value === ADMIN_PASS){
+    isAdmin = true; $("loginErr").textContent = "";
+    modal.classList.remove("open"); e.target.reset(); render();
+  } else {
+    $("loginErr").textContent = "Incorrect email or password.";
+  }
+});
+
+/* Keep multiple open tabs in sync */
+window.addEventListener("storage", e => { if(e.key === STORAGE_KEY){ projects = load(); render(); } });
+
+render();
+</script>
+</body>
+</html>
