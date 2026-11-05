@@ -1,6 +1,6 @@
-// Paste the two values from Supabase: Project Settings -> API.
-// Both are meant to be public. NEVER paste the "service_role" key here.
+// Public values from Supabase (Project Settings -> API Keys). Safe to be public.
+// NEVER paste the secret / service_role key here.
 window.FABOOLUX_CONFIG = {
-  supabaseUrl: "PASTE_PROJECT_URL_HERE",        // e.g. https://abcdxyz.supabase.co
-  supabaseAnonKey: "PASTE_ANON_PUBLIC_KEY_HERE" // the "anon" / "public" key
+  supabaseUrl: "https://hjtqedknflmrhpjeegii.supabase.co",
+  supabaseAnonKey: "sb_publishable_e8bQfowpEHCrJliTtdbk0Q_Cmu3KnJy"
 };
