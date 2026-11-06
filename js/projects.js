@@ -219,11 +219,9 @@ function renderList(mode) {
     const done = isDispatched(p);
     const card = el('article', { class: 'card project' + anim + (attention ? ' attn' : ''), 'data-pk': p.id },
       el('div', { class: 'p-top' },
-        el('div', { class: 'p-title' },
-          el('span', { class: 'pid', text: p.project_id }),
-          el('h3', { class: 'pname' }, el('a', { class: 'stretch', href: `#/project/${p.id}`, text: p.project_name })),
-          tag(p.current_status),
-          attention ? blink(noteText(attention)) : null),
+        el('span', { class: 'pid', text: p.project_id }),
+        el('h3', { class: 'pname' }, el('a', { class: 'stretch', href: `#/project/${p.id}`, text: p.project_name })),
+        el('div', { class: 'p-status' }, tag(p.current_status), attention ? blink(noteText(attention)) : null),
         el('div', { class: 'p-actions' },
           attention ? el('button', { class: 'btn small ghost ack', type: 'button', text: 'Acknowledge', onclick: () => acknowledge(attention.id) }) : null,
           canEditStatus(user.role) && p.next_status
@@ -278,21 +276,16 @@ function personBlock(title, person) {
     el('dd', {}, el('span', { class: 'person-name', text: person.name }), el('span', { class: 'person-email', text: person.email })));
 }
 
-function activityItem(h, i) {
+// One plain line per change: when, who, and what changed. No cards or boxes.
+function activityItem(h) {
   const created = h.previous_status == null;
-  const row = (k, v) => el('div', { class: 'a-row' }, el('dt', { text: k }), el('dd', {}, v));
+  const who = `${h.by.name} (${h.by.email})`;
   return el('li', { class: 'activity' + (h.pending ? ' pending' : '') },
-    el('span', { class: 'a-dot', 'aria-hidden': 'true' }),
-    el('div', { class: 'a-card' },
-      el('div', { class: 'a-title' },
-        el('span', { text: `Activity ${i + 1} – ${created ? 'Project Created' : 'Status Updated'}` }),
-        h.pending ? el('span', { class: 'saving', text: 'Saving…' }) : null),
-      el('dl', { class: 'a-meta' },
-        row(created ? 'Created By' : 'Changed By', h.by.name),
-        row('Email', h.by.email),
-        created ? row('Initial Status', tag(h.new_status)) : [row('Previous Status', tag(h.previous_status)), row('New Status', tag(h.new_status))],
-        row('Date', fmtDate(h.changed_at)),
-        row('Time', fmtTime(h.changed_at)))));
+    el('span', { class: 'h-when', text: `${fmtDate(h.changed_at)}, ${fmtTime(h.changed_at)}` }),
+    el('span', { class: 'h-what', text: created
+      ? `${who} created the project. Initial status: ${label(h.new_status)}.`
+      : `${who} changed the status from ${label(h.previous_status)} to ${label(h.new_status)}.` }),
+    h.pending ? el('span', { class: 'saving', text: 'Saving…' }) : null);
 }
 
 export function viewProject(id) {
@@ -312,7 +305,7 @@ export function viewProject(id) {
       STATUSES.map((s, i) => {
         const skipped = i < idx && !reached[s];   // e.g. Sent Back to R&D when Factory went straight to Final SOD
         const done = i !== idx && !!reached[s];   // reached at some point (also after a return to Factory)
-        return el('li', { class: `step ${skipped ? 'skipped' : done ? 'done' : i === idx ? 'current' : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
+        return el('li', { class: `step ${skipped ? 'skipped' : done ? 'done' : i === idx ? `current s${i + 1}` : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
           el('span', { class: 'dot', 'aria-hidden': 'true', text: skipped ? '–' : done ? '✓' : String(i + 1) }),
           el('span', { class: 'step-text' },
             el('span', { class: 'step-name', text: label(s) }),
@@ -325,7 +318,7 @@ export function viewProject(id) {
       ? el('button', { class: 'btn primary', type: 'button', text: 'Edit Status', onclick: () => advanceFlow(p, draw) })
       : null;
 
-    page.replaceChildren(
+    page.replaceChildren(...[
       el('a', { class: 'back', href: isDispatched(p) ? '#/projects' : '#/' }, icon('back'), isDispatched(p) ? 'Completed Projects' : 'Dashboard'),
       attention ? el('div', { class: 'attn-banner', role: 'status' },
         blink(noteText(attention)),
@@ -349,7 +342,8 @@ export function viewProject(id) {
         steps),
       el('section', { class: 'panel' },
         el('h2', { class: 'section-title', text: 'Activity history' }),
-        el('ol', { class: 'timeline', 'aria-label': 'Activity history' }, history.map(activityItem))));
+        el('ul', { class: 'history', 'aria-label': 'Activity history' }, history.map(activityItem))),
+    ].filter(Boolean));
   }
 
   async function load() {
