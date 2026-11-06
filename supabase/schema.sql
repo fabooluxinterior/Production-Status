@@ -94,12 +94,19 @@ create index if not exists audit_created_idx on public.audit_log (created_at des
 create table if not exists public.notifications (
   id          bigint generated always as identity primary key,
   project_id  bigint not null references public.projects (id),
-  event       text not null check (event in ('rnd_received', 'rnd_sent_back', 'factory_received', 'production_started')),
-  target_role text not null check (target_role in ('super_admin', 'admin')),
+  event       text not null,
+  target_role text not null,
   status      text not null,          -- the project status this notification is about
   created_by  uuid references public.profiles (id),
   created_at  timestamptz not null default now()
 );
+alter table public.notifications add column if not exists target_user uuid references public.profiles (id);   -- set for Designer alerts
+alter table public.notifications drop constraint if exists notifications_event_check;
+alter table public.notifications drop constraint if exists notifications_target_role_check;
+alter table public.notifications add constraint notifications_event_check check (event in (
+  'rnd_received', 'rnd_sent_back', 'factory_received', 'production_started', 'designer_sent_back', 'designer_final_sod'));
+alter table public.notifications add constraint notifications_target_role_check check (target_role in ('super_admin', 'admin', 'designer'));
+
 -- Each notification belongs to the status change (history row) that caused it, so a project that
 -- returns to Factory or R&D later raises a fresh alert, and repeating the same change can't duplicate it.
 alter table public.notifications add column if not exists history_id bigint references public.project_status_history (id);
@@ -258,7 +265,7 @@ drop policy if exists audit_read on public.audit_log;
 create policy audit_read on public.audit_log for select to authenticated using (public.my_role() = 'super_admin');
 
 drop policy if exists notifications_read on public.notifications;
-create policy notifications_read on public.notifications for select to authenticated using (target_role = public.my_role());
+create policy notifications_read on public.notifications for select to authenticated using (target_role = public.my_role() and (target_user is null or target_user = auth.uid()));
 drop policy if exists acks_read on public.notification_acks;
 create policy acks_read on public.notification_acks for select to authenticated using (user_id = auth.uid() and public.my_role() is not null);
 
@@ -294,17 +301,22 @@ $$;
 drop function if exists public.notify_for_status(bigint, text, uuid);
 create or replace function public.notify_for_status(p_project bigint, p_status text, p_by uuid, p_history bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare ev text; role_ text;
+declare ev text; role_ text; target uuid;
 begin
   select e, r into ev, role_ from (values
-    ('CHECKING AT R&D',     'rnd_received',       'super_admin'),
-    ('SENT BACK TO R&D',    'rnd_sent_back',      'super_admin'),
-    ('CHECKING AT FACTORY', 'factory_received',   'admin'),
-    ('UNDER PRODUCTION',    'production_started', 'admin')) v(s, e, r)
+    ('CHECKING AT R&D',       'rnd_received',       'super_admin'),
+    ('SENT BACK TO R&D',      'rnd_sent_back',      'super_admin'),
+    ('CHECKING AT FACTORY',   'factory_received',   'admin'),
+    ('UNDER PRODUCTION',      'production_started', 'admin'),
+    ('SENT BACK TO DESIGNER', 'designer_sent_back', 'designer'),
+    ('FINAL SOD PENDING',     'designer_final_sod', 'designer')) v(s, e, r)
   where v.s = p_status;
   if ev is null then return; end if;
-  insert into public.notifications (project_id, event, target_role, status, created_by, history_id)
-  values (p_project, ev, role_, p_status, p_by, p_history)
+  if role_ = 'designer' then
+    select designer_user_id into target from public.projects where id = p_project;
+  end if;
+  insert into public.notifications (project_id, event, target_role, target_user, status, created_by, history_id)
+  values (p_project, ev, role_, target, p_status, p_by, p_history)
   on conflict (history_id) do nothing;
 end $$;
 
@@ -474,7 +486,7 @@ create or replace function public.list_notifications() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare r text := public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
 begin
-  if r not in ('super_admin', 'admin') then return '[]'::jsonb; end if;
+  if r not in ('super_admin', 'admin', 'designer') then return '[]'::jsonb; end if;
   return (select coalesce(jsonb_agg(t.x order by t.created desc, t.nid desc), '[]'::jsonb) from (
     select n.created_at as created, n.id as nid,
       jsonb_build_object(
@@ -485,16 +497,16 @@ begin
     from public.notifications n
     join public.projects p on p.id = n.project_id
     left join public.notification_acks a on a.notification_id = n.id and a.user_id = auth.uid()
-    where n.target_role = r
+    where n.target_role = r and (n.target_user is null or n.target_user = auth.uid())
     order by n.created_at desc, n.id desc
     limit 300) t);
 end $$;
 
 create or replace function public.acknowledge_notification(p_id bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare r text := public.require_role(array['super_admin', 'admin']);
+declare r text := public.require_role(array['super_admin', 'admin', 'designer']);
 begin
-  if not exists (select 1 from public.notifications where id = p_id and target_role = r) then
+  if not exists (select 1 from public.notifications where id = p_id and target_role = r and (target_user is null or target_user = auth.uid())) then
     raise exception 'Notification not found.';
   end if;
   insert into public.notification_acks (notification_id, user_id) values (p_id, auth.uid())
@@ -503,10 +515,10 @@ end $$;
 
 create or replace function public.acknowledge_all_notifications() returns void
 language plpgsql security definer set search_path = public as $$
-declare r text := public.require_role(array['super_admin', 'admin']);
+declare r text := public.require_role(array['super_admin', 'admin', 'designer']);
 begin
   insert into public.notification_acks (notification_id, user_id)
-  select n.id, auth.uid() from public.notifications n where n.target_role = r
+  select n.id, auth.uid() from public.notifications n where n.target_role = r and (n.target_user is null or n.target_user = auth.uid())
   on conflict do nothing;
 end $$;
 
@@ -535,12 +547,14 @@ begin
 end $$;
 
 -- ================================================================ 9. upgrade: attention for projects already waiting
-insert into public.notifications (project_id, event, target_role, status, created_at, history_id)
-select p.id, v.e, v.r, p.current_status, p.updated_at,
+insert into public.notifications (project_id, event, target_role, target_user, status, created_at, history_id)
+select p.id, v.e, v.r, case when v.r = 'designer' then p.designer_user_id end, p.current_status, p.updated_at,
        (select max(h.id) from public.project_status_history h where h.project_id = p.id and h.new_status = p.current_status)
 from public.projects p
 join (values ('CHECKING AT R&D', 'rnd_received', 'super_admin'),
              ('SENT BACK TO R&D', 'rnd_sent_back', 'super_admin'),
              ('CHECKING AT FACTORY', 'factory_received', 'admin'),
-             ('UNDER PRODUCTION', 'production_started', 'admin')) v(s, e, r) on v.s = p.current_status
+             ('UNDER PRODUCTION', 'production_started', 'admin'),
+             ('SENT BACK TO DESIGNER', 'designer_sent_back', 'designer'),
+             ('FINAL SOD PENDING', 'designer_final_sod', 'designer')) v(s, e, r) on v.s = p.current_status
 on conflict (history_id) do nothing;

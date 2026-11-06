@@ -43,6 +43,8 @@ export const NOTE_TEXT = {
   rnd_sent_back: 'Sent back to R&D',
   factory_received: 'Received by Factory',
   production_started: 'Moved to Under Production',
+  designer_sent_back: 'Sent back to you',
+  designer_final_sod: 'Final SOD: action needed',
 };
 export const ACTION = {
   'SENT BACK TO R&D': ['Send Back to R&D', 'Returns the project to R&D and alerts the Super Admin.'],

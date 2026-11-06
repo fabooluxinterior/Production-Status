@@ -127,6 +127,14 @@ function statTiles(role, all) {
       completed,
     ];
   }
+  if (role === 'designer') {
+    return [
+      { label: 'My Active Projects', n: active },
+      { label: 'My Assigned Projects', n: all.length },
+      { label: 'Needs My Attention', n: waiting('designer_sent_back', 'designer_final_sod'), attn: true, alertText: 'NEEDS ATTENTION' },
+      completed,
+    ];
+  }
   return [
     { label: 'My Active Projects', n: active },
     { label: 'My Assigned Projects', n: all.length },

@@ -40,6 +40,7 @@ Dispatched projects move automatically to **Completed Projects** (nothing is del
 
 - Super Admin is alerted when a project is received by R&D or sent back to R&D.
 - Admin is alerted when a project is received by Factory (and when it goes into production).
+- The assigned Designer is alerted when their project is Sent Back to Designer or reaches Final SOD Pending.
 - Alerts blink on the project card and in the bell menu until you acknowledge them or the project moves on.
   Each person acknowledges for themselves. History (with PJ numbers and times) stays in the bell menu.
 

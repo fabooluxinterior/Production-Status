@@ -1,8 +1,9 @@
-// Attention notifications for Super Admin and Admin: store, bell + panel, acknowledge.
+// Attention notifications for Super Admin, Admin and Designers: store, bell + panel, acknowledge.
 // The server decides who gets what; this file only shows and acknowledges.
 import { data } from './data.js';
 import { NOTE_TEXT, el, fmtDate, fmtTime, icon, toast } from './util.js';
 
+const WATCHERS = ['super_admin', 'admin', 'designer'];
 let items = [];
 let known = new Set();     // ids already seen, so a new arrival can be announced once
 let first = true;
@@ -21,7 +22,7 @@ export const openNotifs = () => items.filter(isOpen);
 export const attentionFor = (projectPk) => items.find((n) => n.project === projectPk && isOpen(n)) || null;
 
 export async function loadNotifs(role) {
-  if (role !== 'super_admin' && role !== 'admin') return;
+  if (!WATCHERS.includes(role)) return;
   try {
     const next = await data.notifications();
     const fresh = next.filter((n) => !known.has(n.id) && isOpen(n));
@@ -55,7 +56,7 @@ export async function acknowledgeAll() {
 
 // ---------------------------------------------------------------- bell + panel
 export function bell(role) {
-  if (role !== 'super_admin' && role !== 'admin') return null;
+  if (!WATCHERS.includes(role)) return null;
   const badge = el('span', { class: 'bell-badge', hidden: true });
   const btn = el('button', { class: 'icon-btn bell', type: 'button', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', 'aria-label': 'Notifications' }, icon('bell'), badge);
   const wrap = el('div', { class: 'bell-wrap' }, btn);
