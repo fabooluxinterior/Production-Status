@@ -89,6 +89,27 @@ create table if not exists public.audit_log (
 );
 create index if not exists audit_created_idx on public.audit_log (created_at desc);
 
+-- Attention notifications. One row per event (a project reaches each stage only once, so the
+-- unique index also prevents duplicates). Each person acknowledges for themselves.
+create table if not exists public.notifications (
+  id          bigint generated always as identity primary key,
+  project_id  bigint not null references public.projects (id),
+  event       text not null check (event in ('rnd_received', 'rnd_sent_back', 'factory_received', 'production_started')),
+  target_role text not null check (target_role in ('super_admin', 'admin')),
+  status      text not null,          -- the project status this notification is about
+  created_by  uuid references public.profiles (id),
+  created_at  timestamptz not null default now()
+);
+create unique index if not exists notifications_event_key on public.notifications (project_id, event);
+create index if not exists notifications_role_idx on public.notifications (target_role, created_at desc);
+
+create table if not exists public.notification_acks (
+  notification_id bigint not null references public.notifications (id),
+  user_id         uuid not null references public.profiles (id),
+  acked_at        timestamptz not null default now(),
+  primary key (notification_id, user_id)
+);
+
 -- ================================================================ 2. who is calling?
 -- my_role() is NULL (= no access to anything) when the person is deactivated, must still
 -- change a temporary password, or their login session was revoked.
@@ -190,6 +211,16 @@ drop trigger if exists audit_no_truncate on public.audit_log;
 create trigger audit_no_truncate before truncate on public.audit_log
   for each statement execute function public.block_modification();
 
+drop trigger if exists notifications_immutable on public.notifications;
+create trigger notifications_immutable before update or delete on public.notifications
+  for each row execute function public.block_modification();
+drop trigger if exists notifications_no_truncate on public.notifications;
+create trigger notifications_no_truncate before truncate on public.notifications
+  for each statement execute function public.block_modification();
+drop trigger if exists acks_immutable on public.notification_acks;
+create trigger acks_immutable before update or delete on public.notification_acks
+  for each row execute function public.block_modification();
+
 -- ================================================================ 4. row level security
 -- Browsers can only READ. Every change goes through the functions below or the admin-users function.
 
@@ -197,6 +228,8 @@ alter table public.profiles enable row level security;
 alter table public.projects enable row level security;
 alter table public.project_status_history enable row level security;
 alter table public.audit_log enable row level security;
+alter table public.notifications enable row level security;
+alter table public.notification_acks enable row level security;
 
 drop policy if exists profiles_read on public.profiles;
 create policy profiles_read on public.profiles for select to authenticated using (
@@ -216,8 +249,14 @@ create policy history_read on public.project_status_history for select to authen
 drop policy if exists audit_read on public.audit_log;
 create policy audit_read on public.audit_log for select to authenticated using (public.my_role() = 'super_admin');
 
+drop policy if exists notifications_read on public.notifications;
+create policy notifications_read on public.notifications for select to authenticated using (target_role = public.my_role());
+drop policy if exists acks_read on public.notification_acks;
+create policy acks_read on public.notification_acks for select to authenticated using (user_id = auth.uid() and public.my_role() is not null);
+
 revoke all on all tables in schema public from anon, authenticated;
-grant select on public.profiles, public.projects, public.project_status_history, public.audit_log to authenticated;
+grant select on public.profiles, public.projects, public.project_status_history, public.audit_log,
+                public.notifications, public.notification_acks to authenticated;
 
 -- ================================================================ 5. helpers
 
@@ -227,6 +266,36 @@ begin
   insert into public.audit_log (actor_id, actor_email, action, target_type, target_id, details)
   values (auth.uid(), (select email from public.profiles where id = auth.uid()), p_action, p_target_type, p_target_id,
           coalesce(p_details, '{}'::jsonb));
+end $$;
+
+-- Allowed next stages. After CHECKING AT FACTORY there are two choices; everything else is one step forward.
+create or replace function public.next_statuses(p_status text) returns text[]
+language sql immutable as $$
+  select case p_status
+    when 'CHECKING AT R&D'        then array['SENT BACK TO DESIGNER']
+    when 'SENT BACK TO DESIGNER'  then array['CHECKING AT FACTORY']
+    when 'CHECKING AT FACTORY'    then array['SENT BACK TO R&D', 'FINAL SOD PENDING']
+    when 'SENT BACK TO R&D'       then array['FINAL SOD PENDING']
+    when 'FINAL SOD PENDING'      then array['UNDER PRODUCTION']
+    when 'UNDER PRODUCTION'       then array['DISPATCHED']
+    else array[]::text[] end
+$$;
+
+-- Records the attention events that a status change causes (once per project and event).
+create or replace function public.notify_for_status(p_project bigint, p_status text, p_by uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare ev text; role_ text;
+begin
+  select e, r into ev, role_ from (values
+    ('CHECKING AT R&D',     'rnd_received',       'super_admin'),
+    ('SENT BACK TO R&D',    'rnd_sent_back',      'super_admin'),
+    ('CHECKING AT FACTORY', 'factory_received',   'admin'),
+    ('UNDER PRODUCTION',    'production_started', 'admin')) v(s, e, r)
+  where v.s = p_status;
+  if ev is null then return; end if;
+  insert into public.notifications (project_id, event, target_role, status, created_by)
+  values (p_project, ev, role_, p_status, p_by)
+  on conflict (project_id, event) do nothing;
 end $$;
 
 create or replace function public.user_json(p_id uuid) returns jsonb
@@ -240,6 +309,7 @@ language sql stable security definer set search_path = public as $$
   select jsonb_build_object(
     'id', p.id, 'project_id', p.project_id, 'project_name', p.project_name,
     'current_status', p.current_status,
+    'next_options', to_jsonb(public.next_statuses(p.current_status)),
     'designer', public.user_json(p.designer_user_id),
     'dm', public.user_json(p.dm_user_id),
     'created_by', public.user_json(p.created_by),
@@ -349,6 +419,7 @@ begin
 
   insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
   values (proj.id, null, proj.current_status, uid);
+  perform public.notify_for_status(proj.id, proj.current_status, uid);
   perform public.audit('project.create', 'project', proj.project_id,
                        jsonb_build_object('name', nm, 'designer', p_designer, 'dm', p_dm));
   return public.project_json(proj.id);
@@ -357,32 +428,72 @@ end $$;
 create or replace function public.advance_project(p_id bigint, p_new_status text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
-  uid      uuid := auth.uid();
-  statuses text[] := array['CHECKING AT R&D', 'SENT BACK TO DESIGNER', 'CHECKING AT FACTORY',
-                           'SENT BACK TO R&D', 'FINAL SOD PENDING', 'UNDER PRODUCTION', 'DISPATCHED'];
-  cur      public.projects;
-  i        int;
+  uid  uuid := auth.uid();
+  cur  public.projects;
+  opts text[];
 begin
   perform public.require_role(array['super_admin', 'admin']);
 
   select * into cur from public.projects where id = p_id for update;   -- row lock: no double-advance
   if not found then raise exception 'Project not found.'; end if;
 
-  i := array_position(statuses, cur.current_status);
-  if i = array_length(statuses, 1) then
+  opts := public.next_statuses(cur.current_status);
+  if cardinality(opts) = 0 then
     raise exception 'This project is already DISPATCHED. No further changes are possible.';
   end if;
-  if p_new_status is distinct from statuses[i + 1] then
+  if p_new_status is null or not (p_new_status = any (opts)) then
     raise exception 'The project''s status has changed or that stage can''t be skipped to. Refresh and try again.';
   end if;
 
   update public.projects set current_status = p_new_status, updated_at = now() where id = p_id;
   insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
-  values (p_id, statuses[i], p_new_status, uid);
+  values (p_id, cur.current_status, p_new_status, uid);
+  perform public.notify_for_status(p_id, p_new_status, uid);
   perform public.audit('project.status', 'project', cur.project_id,
-                       jsonb_build_object('from', statuses[i], 'to', p_new_status));
+                       jsonb_build_object('from', cur.current_status, 'to', p_new_status));
 
   return jsonb_build_object('project', public.project_json(p_id), 'history', public.history_json(p_id));
+end $$;
+
+-- Notifications for the signed-in Super Admin / Admin (their own role only), newest first.
+create or replace function public.list_notifications() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare r text := public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+begin
+  if r not in ('super_admin', 'admin') then return '[]'::jsonb; end if;
+  return (select coalesce(jsonb_agg(t.x order by t.created desc, t.nid desc), '[]'::jsonb) from (
+    select n.created_at as created, n.id as nid,
+      jsonb_build_object(
+        'id', n.id, 'event', n.event, 'status', n.status, 'created_at', n.created_at,
+        'project', p.id, 'project_id', p.project_id, 'project_name', p.project_name,
+        'acknowledged_at', a.acked_at,
+        'addressed', p.current_status <> n.status) as x
+    from public.notifications n
+    join public.projects p on p.id = n.project_id
+    left join public.notification_acks a on a.notification_id = n.id and a.user_id = auth.uid()
+    where n.target_role = r
+    order by n.created_at desc, n.id desc
+    limit 300) t);
+end $$;
+
+create or replace function public.acknowledge_notification(p_id bigint) returns void
+language plpgsql security definer set search_path = public as $$
+declare r text := public.require_role(array['super_admin', 'admin']);
+begin
+  if not exists (select 1 from public.notifications where id = p_id and target_role = r) then
+    raise exception 'Notification not found.';
+  end if;
+  insert into public.notification_acks (notification_id, user_id) values (p_id, auth.uid())
+  on conflict do nothing;
+end $$;
+
+create or replace function public.acknowledge_all_notifications() returns void
+language plpgsql security definer set search_path = public as $$
+declare r text := public.require_role(array['super_admin', 'admin']);
+begin
+  insert into public.notification_acks (notification_id, user_id)
+  select n.id, auth.uid() from public.notifications n where n.target_role = r
+  on conflict do nothing;
 end $$;
 
 -- ================================================================ 7. who may run what
@@ -391,7 +502,8 @@ revoke execute on all functions in schema public from public, anon, authenticate
 grant execute on function public.my_role(), public.project_visible(uuid, uuid) to authenticated;   -- used by the access rules
 grant execute on function
   public.my_profile(), public.set_my_theme(text), public.list_projects(), public.get_project(bigint),
-  public.assignable_users(), public.create_project(text, text, uuid, uuid), public.advance_project(bigint, text)
+  public.assignable_users(), public.create_project(text, text, uuid, uuid), public.advance_project(bigint, text),
+  public.list_notifications(), public.acknowledge_notification(bigint), public.acknowledge_all_notifications()
   to authenticated;
 grant execute on function public.session_alive(uuid), public.revoke_user_sessions(uuid, uuid) to service_role;
 
@@ -403,5 +515,17 @@ begin
     begin alter publication supabase_realtime add table public.projects; exception when duplicate_object then null; end;
     begin alter publication supabase_realtime add table public.project_status_history; exception when duplicate_object then null; end;
     begin alter publication supabase_realtime add table public.profiles; exception when duplicate_object then null; end;
+    begin alter publication supabase_realtime add table public.notifications; exception when duplicate_object then null; end;
+    begin alter publication supabase_realtime add table public.notification_acks; exception when duplicate_object then null; end;
   end if;
 end $$;
+
+-- ================================================================ 9. upgrade: attention for projects already waiting
+insert into public.notifications (project_id, event, target_role, status, created_at)
+select p.id, v.e, v.r, p.current_status, p.updated_at
+from public.projects p
+join (values ('CHECKING AT R&D', 'rnd_received', 'super_admin'),
+             ('SENT BACK TO R&D', 'rnd_sent_back', 'super_admin'),
+             ('CHECKING AT FACTORY', 'factory_received', 'admin'),
+             ('UNDER PRODUCTION', 'production_started', 'admin')) v(s, e, r) on v.s = p.current_status
+on conflict (project_id, event) do nothing;

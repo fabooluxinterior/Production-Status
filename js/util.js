@@ -31,6 +31,16 @@ export const nextStatus = (s) => {
   const i = STATUSES.indexOf(s);
   return i >= 0 && i < STATUSES.length - 1 ? STATUSES[i + 1] : null;
 };
+export const NOTE_TEXT = {
+  rnd_received: 'Received by R&D',
+  rnd_sent_back: 'Sent back to R&D',
+  factory_received: 'Received by Factory',
+  production_started: 'Moved to Under Production',
+};
+export const ACTION = {
+  'SENT BACK TO R&D': ['Send Back to R&D', 'Returns the project to R&D and alerts the Super Admin.'],
+  'FINAL SOD PENDING': ['Final SOD Pending', 'Moves the project on to Final SOD. It stays in the active list.'],
+};
 export const isDispatched = (p) => p.current_status === ST_DISPATCHED;
 
 // ---------------------------------------------------------------- DOM
@@ -58,6 +68,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
 };
 export function icon(name) {

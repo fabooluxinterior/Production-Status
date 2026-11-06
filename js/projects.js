@@ -1,22 +1,19 @@
 // Dashboard, project list, project details (with activity history) and Create Project.
 import { data } from './data.js';
 import { go, shell, state } from './core.js';
-import { blink, busy, combo, confirmModal, emptyState, skeletonList, tag } from './ui.js';
+import { blink, busy, chooseModal, combo, confirmModal, emptyState, skeletonList, tag } from './ui.js';
+import { acknowledge, attentionFor, loadNotifs, noteText, openNotifs, onNotifs } from './notifications.js';
 import {
-  ST_DISPATCHED, ST_FACTORY, ST_PRODUCTION, ST_RND, STATUSES,
+  ACTION, ST_DISPATCHED, ST_FACTORY, ST_PRODUCTION, ST_RND, STATUSES,
   el, fmtDate, fmtTime, icon, isDispatched, label, nextStatus, statusIndex, toast,
 } from './util.js';
 
 const canCreate = (role) => role === 'super_admin' || role === 'admin' || role === 'dm';
 const canEditStatus = (role) => role === 'super_admin' || role === 'admin';
 
-// Attention indicators: Super Admin watches R&D; Admin watches Factory and Production.
-function alertFor(role, p) {
-  if (role === 'super_admin' && p.current_status === ST_RND) return 'R&D attention required';
-  if (role === 'admin' && p.current_status === ST_FACTORY) return 'Factory check pending';
-  if (role === 'admin' && p.current_status === ST_PRODUCTION) return 'In production';
-  return null;
-}
+// Attention comes from notifications (Super Admin: R&D; Admin: Factory and Production) and stays
+// until the person acknowledges it or the project moves on.
+const prefersReduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function applyFilters(list, f) {
   const q = f.q.trim().toLowerCase();
@@ -24,6 +21,7 @@ function applyFilters(list, f) {
   const nm = f.name.trim().toLowerCase();
   return list.filter((p) =>
     (!f.status || p.current_status === f.status) &&
+    (!f.attn || attentionFor(p.id)) &&
     (!q || [p.project_id, p.project_name, p.designer.name, p.designer.email, p.dm.name, p.dm.email]
       .some((v) => String(v).toLowerCase().includes(q))) &&
     (!pid || p.project_id.toLowerCase().includes(pid)) &&
@@ -36,22 +34,39 @@ const metaItem = (k, v) => el('div', {}, el('dt', { text: k }), el('dd', { text:
 
 // Confirm, update the screen immediately, save in the background, and roll back if the save fails.
 export async function advanceFlow(project, redraw) {
-  const next = project.next_status;
-  if (!next) return;
-  const ok = await confirmModal({
-    title: 'Update project status',
-    confirmText: 'Confirm update',
-    body: [
-      el('p', { class: 'muted', text: `${project.project_id} · ${project.project_name}` }),
-      el('div', { class: 'flow' }, tag(project.current_status), el('span', { class: 'arrow', 'aria-hidden': 'true', text: '→' }), tag(next, true)),
-      el('p', { class: 'muted small', text: 'Only the next stage is available. This is recorded in the project history with your name and the time.' }),
-    ],
-  });
-  if (!ok) return;
+  const options = project.next_options || [];
+  if (!options.length) return;
+  const header = [
+    el('p', { class: 'muted', text: `${project.project_id} · ${project.project_name}` }),
+    el('div', { class: 'flow' }, tag(project.current_status), el('span', { class: 'arrow', 'aria-hidden': 'true', text: '→' }),
+      options.length === 1 ? tag(options[0], true) : el('span', { class: 'muted', text: 'Choose the next step' })),
+  ];
+  const note = el('p', { class: 'muted small', text: 'This is recorded in the project history with your name and the time.' });
+  let next;
+  if (options.length === 1) {
+    next = options[0];
+    const ok = await confirmModal({ title: 'Update project status', confirmText: 'Confirm update', body: [...header, note] });
+    if (!ok) return;
+  } else {
+    next = await chooseModal({
+      title: 'Update project status', body: [...header, note],
+      options: options.map((o) => ({ value: o, title: (ACTION[o] || [label(o)])[0], desc: (ACTION[o] || ['', ''])[1] })),
+    });
+    if (!next) return;
+  }
+  // A project that is being completed slides out of the active list before it moves.
+  if (next === ST_DISPATCHED && !prefersReduced()) {
+    const card = document.querySelector(`[data-pk="${project.id}"]`);
+    if (card && card.classList.contains('project')) {
+      card.classList.add('leaving');
+      await new Promise((r) => setTimeout(r, 280));
+    }
+  }
 
   const before = { projects: state.projects, detail: state.detail };
   const now = new Date().toISOString();
-  const optimistic = { ...project, current_status: next, next_status: nextStatus(next), updated_at: now };
+  const nextOptions = nextStatus(next) ? (next === 'CHECKING AT FACTORY' ? ['SENT BACK TO R&D', 'FINAL SOD PENDING'] : [nextStatus(next)]) : [];
+  const optimistic = { ...project, current_status: next, next_options: nextOptions, next_status: nextOptions[0] || null, updated_at: now };
   state.projects = state.projects.map((p) => (p.id === project.id ? optimistic : p));
   if (state.detail && state.detail.project.id === project.id) {
     state.detail = {
@@ -68,7 +83,10 @@ export async function advanceFlow(project, redraw) {
     const res = await data.advance(project.id, next);
     state.projects = state.projects.map((p) => (p.id === project.id ? res.project : p));
     if (state.detail && state.detail.project.id === project.id) state.detail = res;
-    toast(`Status updated to ${label(res.project.current_status)}`);
+    loadNotifs(state.user.role);   // new alerts for others, and this one is now handled
+    toast(res.project.current_status === ST_DISPATCHED
+      ? `${res.project.project_id} moved to Completed Projects`
+      : `Status updated to ${label(res.project.current_status)}`);
   } catch (e) {
     state.projects = before.projects;
     state.detail = before.detail;
@@ -83,26 +101,31 @@ export async function advanceFlow(project, redraw) {
 // ================================================================ dashboard & project list
 
 function statTiles(role, all) {
-  const count = (s) => all.filter((p) => p.current_status === s).length;
+  const count = (st) => all.filter((p) => p.current_status === st).length;
   const active = all.filter((p) => !isDispatched(p)).length;
+  const waiting = (...events) => openNotifs().filter((n) => events.includes(n.event)).length;
+  const completed = { label: 'Completed Projects', n: count(ST_DISPATCHED), completed: true };
   if (role === 'super_admin') {
+    const attn = waiting('rnd_received', 'rnd_sent_back');
     return [
       { label: 'Total Active Projects', n: active },
       { label: 'Checking at R&D', n: count(ST_RND), filter: ST_RND },
-      { label: 'R&D Attention Required', n: count(ST_RND), filter: ST_RND, alert: 'R&D ATTENTION REQUIRED' },
-      { label: 'Dispatched Projects', n: count(ST_DISPATCHED), completed: true },
+      { label: 'R&D Attention Required', n: attn, attn: true, alertText: 'NEEDS ATTENTION' },
+      completed,
     ];
   }
   if (role === 'admin') {
     return [
       { label: 'Total Active Projects', n: active },
-      { label: 'Checking at Factory', n: count(ST_FACTORY), filter: ST_FACTORY, alert: 'FACTORY CHECKING' },
-      { label: 'Under Production', n: count(ST_PRODUCTION), filter: ST_PRODUCTION, alert: 'IN PRODUCTION' },
+      { label: 'Checking at Factory', n: count(ST_FACTORY), filter: ST_FACTORY, waiting: waiting('factory_received'), alertText: 'FACTORY CHECKING' },
+      { label: 'Under Production', n: count(ST_PRODUCTION), filter: ST_PRODUCTION, waiting: waiting('production_started'), alertText: 'IN PRODUCTION' },
+      completed,
     ];
   }
   return [
     { label: 'My Active Projects', n: active },
     { label: 'My Assigned Projects', n: all.length },
+    completed,
   ];
 }
 
@@ -124,20 +147,26 @@ function renderList(mode) {
   const toolbar = el('div', { class: 'toolbar' },
     el('div', { class: 'search-wrap' }, icon('search'), search), pidIn, nameIn, statusSel);
 
+  let rendered = new Map();   // what is on screen: lets only new or changed cards animate
+  let statsShown = false;
+
   function draw() {
     if (!state.loaded) return;
     const all = state.projects;
     const completed = state.tab === 'completed';
     if (statsEl) {
-      statsEl.replaceChildren(...statTiles(u.role, all).map((t) => {
-        const alerting = t.alert && t.n > 0;
-        const clickable = t.filter || t.completed;
+      statsEl.replaceChildren(...statTiles(u.role, all).map((t, i) => {
+        const alerting = t.attn ? t.n > 0 : (t.waiting || 0) > 0;
+        const watched = t.attn || t.alertText;
+        const clickable = t.filter || t.attn || t.completed;
+        const isOn = (t.filter && state.filters.status === t.filter) || (t.attn && state.filters.attn);
         const tile = el('button', {
           type: 'button',
-          class: 'stat' + (t.alert ? ' watch' : '') + (alerting ? ' alerting' : '') + (state.filters.status === t.filter && t.filter ? ' on' : ''),
+          class: 'stat' + (watched ? ' watch' : '') + (alerting ? ' alerting' : '') + (isOn ? ' on' : ''),
           disabled: !clickable,
           onclick: () => {
             if (t.completed) { state.tab = 'completed'; go('#/projects'); return; }
+            if (t.attn) { state.filters.attn = !state.filters.attn; draw(); return; }
             state.filters.status = state.filters.status === t.filter ? '' : t.filter;
             statusSel.value = state.filters.status;
             draw();
@@ -145,23 +174,26 @@ function renderList(mode) {
         },
         el('span', { class: 'lbl', text: t.label }),
         el('span', { class: 'num-row' }, el('span', { class: 'num', text: String(t.n) }), alerting ? el('span', { class: 'blink-dot', 'aria-hidden': 'true' }) : null),
-        t.alert ? el('span', { class: 'note', text: alerting ? t.alert : 'All clear' }) : null);
+        watched ? el('span', { class: 'note', text: alerting ? (t.alertText || 'NEEDS ATTENTION') : 'All clear' }) : null);
+        tile.style.setProperty('--i', String(i));
+        if (!statsShown) tile.classList.add('enter');
         return tile;
       }));
+      statsShown = true;
     }
     const base = all.filter((p) => (completed ? isDispatched(p) : !isDispatched(p)));
     if (tabsEl) {
       const nCompleted = all.filter(isDispatched).length;
       tabsEl.replaceChildren(
         el('button', { type: 'button', role: 'tab', 'aria-selected': String(!completed), class: 'tab' + (!completed ? ' on' : ''), text: `Active (${all.length - nCompleted})`, onclick: () => { state.tab = 'active'; draw(); } }),
-        el('button', { type: 'button', role: 'tab', 'aria-selected': String(completed), class: 'tab' + (completed ? ' on' : ''), text: `Completed / Dispatched (${nCompleted})`, onclick: () => { state.tab = 'completed'; state.filters.status = ''; statusSel.value = ''; draw(); } }));
+        el('button', { type: 'button', role: 'tab', 'aria-selected': String(completed), class: 'tab' + (completed ? ' on' : ''), text: `Completed Projects (${nCompleted})`, onclick: () => { state.tab = 'completed'; state.filters.status = ''; statusSel.value = ''; draw(); } }));
     }
     statusSel.hidden = completed;
 
     const shown = applyFilters(base, state.filters);
     if (!base.length) {
       listEl.replaceChildren(completed
-        ? emptyState('No dispatched projects yet', 'Projects appear here once they reach Dispatched. Their full history is kept.')
+        ? emptyState('No completed projects yet', 'Projects move here automatically once they are dispatched. Their details, assignments and history are kept.')
         : emptyState('No active projects', u.role === 'designer' || u.role === 'dm'
           ? 'Projects assigned to you will appear here.'
           : 'Create a project to get started.',
@@ -169,26 +201,33 @@ function renderList(mode) {
     } else if (!shown.length) {
       listEl.replaceChildren(emptyState('No matching projects', 'Try a different search or clear the filters.'));
     } else {
-      listEl.replaceChildren(el('div', { class: 'list' }, shown.map((p, i) => projectCard(p, i, u))));
+      const prev = rendered;
+      rendered = new Map(shown.map((p) => [p.id, p.current_status]));
+      listEl.replaceChildren(el('div', { class: 'list' }, shown.map((p, i) => projectCard(p, i, u, prev))));
     }
   }
 
-  function projectCard(p, i, user) {
-    const attention = alertFor(user.role, p);
-    const card = el('article', { class: 'card project' },
+  function projectCard(p, i, user, prev) {
+    const attention = attentionFor(p.id);
+    const before = prev.get(p.id);
+    const anim = before === undefined ? ' enter' : before !== p.current_status ? ' changed' : '';
+    const done = isDispatched(p);
+    const card = el('article', { class: 'card project' + anim + (attention ? ' attn' : ''), 'data-pk': p.id },
       el('div', { class: 'p-top' },
         el('div', { class: 'p-title' },
           el('span', { class: 'pid', text: p.project_id }),
           el('h3', { class: 'pname' }, el('a', { class: 'stretch', href: `#/project/${p.id}`, text: p.project_name })),
           tag(p.current_status),
-          attention ? blink(attention) : null),
-        canEditStatus(user.role) && p.next_status
-          ? el('button', { class: 'btn small ghost edit', type: 'button', text: 'Edit Status', onclick: () => advanceFlow(p, draw) })
-          : null),
+          attention ? blink(noteText(attention)) : null),
+        el('div', { class: 'p-actions' },
+          attention ? el('button', { class: 'btn small ghost ack', type: 'button', text: 'Acknowledge', onclick: () => acknowledge(attention.id) }) : null,
+          canEditStatus(user.role) && p.next_status
+            ? el('button', { class: 'btn small ghost edit', type: 'button', text: 'Edit Status', onclick: () => advanceFlow(p, draw) })
+            : null)),
       el('dl', { class: 'meta' },
         metaItem('Designer', p.designer.name),
         metaItem('DM', p.dm.name),
-        metaItem('Last Updated', fmtDate(p.updated_at))));
+        metaItem(done ? 'Completed' : 'Last Updated', fmtDate(p.updated_at))));
     card.style.setProperty('--i', String(Math.min(i, 10)));
     return card;
   }
@@ -217,6 +256,7 @@ function renderList(mode) {
     }
   };
   state.refresh = load;
+  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } draw(); });
   if (state.loaded) draw();
   load();
   return page;
@@ -264,18 +304,27 @@ export function viewProject(id) {
     history.forEach((h) => { reached[h.new_status] = h.changed_at; });
 
     const steps = el('ol', { class: 'steps', 'aria-label': 'Workflow progress' },
-      STATUSES.map((s, i) => el('li', { class: `step ${i < idx ? 'done' : i === idx ? `current s${i + 1}` : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
-        el('span', { class: 'dot', 'aria-hidden': 'true', text: i < idx ? '✓' : String(i + 1) }),
-        el('span', { class: 'step-text' },
-          el('span', { class: 'step-name', text: label(s) }),
-          reached[s] && i <= idx ? el('span', { class: 'step-date', text: `${fmtDate(reached[s])}, ${fmtTime(reached[s])}` }) : null))));
+      STATUSES.map((s, i) => {
+        const skipped = i < idx && !reached[s];   // e.g. Sent Back to R&D when Factory went straight to Final SOD
+        return el('li', { class: `step ${skipped ? 'skipped' : i < idx ? 'done' : i === idx ? 'current' : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
+          el('span', { class: 'dot', 'aria-hidden': 'true', text: skipped ? '–' : i < idx ? '✓' : String(i + 1) }),
+          el('span', { class: 'step-text' },
+            el('span', { class: 'step-name', text: label(s) }),
+            skipped ? el('span', { class: 'step-date', text: 'Not needed' }) : null,
+            reached[s] && i <= idx ? el('span', { class: 'step-date', text: `${fmtDate(reached[s])}, ${fmtTime(reached[s])}` }) : null));
+      }));
+    const attention = attentionFor(p.id);
 
     const editBtn = canEditStatus(u.role) && p.next_status
       ? el('button', { class: 'btn primary', type: 'button', text: 'Edit Status', onclick: () => advanceFlow(p, draw) })
       : null;
 
     page.replaceChildren(
-      el('a', { class: 'back', href: isDispatched(p) ? '#/projects' : '#/' }, icon('back'), isDispatched(p) ? 'Completed projects' : 'Dashboard'),
+      el('a', { class: 'back', href: isDispatched(p) ? '#/projects' : '#/' }, icon('back'), isDispatched(p) ? 'Completed Projects' : 'Dashboard'),
+      attention ? el('div', { class: 'attn-banner', role: 'status' },
+        blink(noteText(attention)),
+        el('span', { class: 'grow' }),
+        el('button', { class: 'btn small', type: 'button', text: 'Acknowledge', onclick: () => acknowledge(attention.id) })) : null,
       el('section', { class: 'panel' },
         el('div', { class: 'detail-head' },
           el('div', { class: 'grow' },
@@ -311,6 +360,7 @@ export function viewProject(id) {
     }
   }
   state.refresh = load;
+  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } draw(); });
   load();
 }
 

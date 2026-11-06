@@ -94,6 +94,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .hint { color: var(--muted); font-size: 0.84rem; }
 .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 
+:root { --ease: cubic-bezier(.2,.7,.2,1); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
 
 /* smooth theme switching (only while switching, so normal use stays snappy) */
@@ -229,6 +230,7 @@ select.input { appearance: none; padding-right: 34px; background-image: linear-g
   background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow); color: var(--text);
   transition: border-color .18s, transform .15s, background-color .3s;
 }
+.stat.enter { animation: cardIn .4s var(--ease) both; animation-delay: calc(var(--i, 0) * 45ms); }
 .stat:disabled { cursor: default; }
 .stat:not(:disabled):hover { border-color: var(--line2); transform: translateY(-1px); }
 .stat.on { border-color: var(--accent); }
@@ -267,8 +269,19 @@ select.input { appearance: none; padding-right: 34px; background-image: linear-g
   position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 16px 20px;
   transition: border-color .18s, transform .18s, background-color .3s;
 }
-.card.project { animation: cardIn .38s cubic-bezier(.2,.7,.2,1) both; animation-delay: calc(var(--i, 0) * 30ms); }
+.card.project.enter { animation: cardIn .38s var(--ease) both; animation-delay: calc(var(--i, 0) * 30ms); }
+.card.project.changed { animation: moved .9s var(--ease) both; }
+.card.project.leaving { animation: leave .28s ease-in both; pointer-events: none; }
+.card.project.attn { box-shadow: var(--shadow), inset 3px 0 0 var(--alert); }
+@keyframes moved {
+  0% { transform: translateY(-6px); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent); }
+  60% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  100% { transform: none; box-shadow: var(--shadow); }
+}
+@keyframes leave { to { opacity: 0; transform: translateX(24px) scale(.98); } }
 @keyframes cardIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.p-actions { display: flex; gap: 8px; flex: none; align-items: center; position: relative; z-index: 2; }
+.card .ack { position: relative; z-index: 2; }
 .card.project:hover { border-color: var(--line2); transform: translateY(-2px); }
 .card.sk { padding: 20px; }
 .p-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
@@ -283,19 +296,13 @@ select.input { appearance: none; padding-right: 34px; background-image: linear-g
 .meta dt, .detail-grid dt, .a-row dt, .cred-k { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: .07em; font-weight: 600; }
 .meta dd, .detail-grid dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 
-/* ============================================================ status tags */
+/* ============================================================ status text
+   Normal statuses are quiet grey text. Only attention indicators (the blinking dot) stand out. */
 .tag {
-  display: inline-block; font-size: 0.7rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
-  padding: 3px 10px; border-radius: 999px; transition: background-color .3s, color .3s;
+  display: inline-block; font-size: 0.72rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+  color: var(--muted); background: none; padding: 0; transition: color .3s;
 }
-.tag.big { font-size: 0.78rem; padding: 5px 14px; }
-.tag.s1 { color: var(--s1-fg); background: var(--s1-bg); }
-.tag.s2 { color: var(--s2-fg); background: var(--s2-bg); }
-.tag.s3 { color: var(--s3-fg); background: var(--s3-bg); }
-.tag.s4 { color: var(--s4-fg); background: var(--s4-bg); }
-.tag.s5 { color: var(--s5-fg); background: var(--s5-bg); }
-.tag.s6 { color: var(--s6-fg); background: var(--s6-bg); }
-.tag.s7 { color: var(--s7-fg); background: var(--s7-bg); }
+.tag.big { font-size: 0.8rem; }
 
 /* ============================================================ project details */
 .back { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); text-decoration: none; margin-bottom: 14px; font-weight: 550; transition: color .18s; }
@@ -318,20 +325,17 @@ select.input { appearance: none; padding-right: 34px; background-image: linear-g
   background: var(--card); border: 2px solid var(--line2); color: var(--muted); transition: background-color .4s, border-color .4s, color .4s, transform .4s;
 }
 .step.done .dot { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.step.current .dot { width: 40px; height: 40px; margin: -4px 0; border: 3px solid var(--fg); color: var(--fg); background: var(--bg-t); animation: pop .5s cubic-bezier(.3,1.6,.5,1) both; }
+.step.current .dot { width: 40px; height: 40px; margin: -4px 0; border: 3px solid var(--accent); color: var(--accent); background: var(--card); animation: pop .5s cubic-bezier(.3,1.6,.5,1) both; }
 @keyframes pop { from { transform: scale(.5); opacity: .4; } to { transform: none; opacity: 1; } }
 .step-text { margin-top: 12px; display: grid; gap: 2px; }
 .step-name { font-size: 0.8rem; font-weight: 550; color: var(--muted); }
 .step.done .step-name { color: var(--text); }
-.step.current .step-name { color: var(--fg); font-weight: 750; font-size: 0.86rem; }
+.step.current .step-name { color: var(--text); font-weight: 750; font-size: 0.86rem; }
+.step.skipped .dot { border-style: dashed; }
+.step.skipped .step-name { color: var(--muted); font-style: italic; }
 .step-date { font-size: 0.7rem; color: var(--muted); }
 .step:not(:last-child)::after { content: ""; position: absolute; top: 15px; left: calc(50% + 24px); right: calc(-50% + 24px); height: 2px; background: var(--line2); transition: background-color .5s; }
 .step.done:not(:last-child)::after { background: var(--accent); }
-.step.current.s1 { --fg: var(--s1-fg); --bg-t: var(--s1-bg); } .step.current.s2 { --fg: var(--s2-fg); --bg-t: var(--s2-bg); }
-.step.current.s3 { --fg: var(--s3-fg); --bg-t: var(--s3-bg); } .step.current.s4 { --fg: var(--s4-fg); --bg-t: var(--s4-bg); }
-.step.current.s5 { --fg: var(--s5-fg); --bg-t: var(--s5-bg); } .step.current.s6 { --fg: var(--s6-fg); --bg-t: var(--s6-bg); }
-.step.current.s7 { --fg: var(--ok); --bg-t: var(--s7-bg); }
-.step.current.s7 .dot { color: var(--s7-fg); }
 
 /* activity history */
 .timeline { list-style: none; margin: 0; padding: 0 0 0 4px; display: grid; gap: 0; }
@@ -437,3 +441,54 @@ td[data-label="Password Management"] .badge { margin-right: 8px; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .blink-dot { animation: none !important; }
 }
+
+/* ============================================================ attention: visible, never dimmed */
+.card.attn .blink-label, .attn-banner .blink-label, .note-row.open .note-what {
+  position: static; width: auto; height: auto; clip: auto; font-size: 0.72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--alert);
+}
+.attn-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; margin-bottom: 14px; border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--alert) 55%, transparent); background: color-mix(in srgb, var(--alert) 9%, var(--card)); animation: drop .24s var(--ease) both; }
+
+/* ============================================================ notifications */
+.bell-wrap { position: relative; }
+.bell { position: relative; }
+.bell.has { color: var(--text); }
+.bell-badge { position: absolute; top: -5px; right: -5px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; display: grid; place-items: center;
+  background: var(--alert); color: #fff; font-size: 0.68rem; font-weight: 700; animation: pop .35s cubic-bezier(.3,1.6,.5,1) both; }
+.note-panel { position: absolute; right: 0; top: calc(100% + 10px); width: min(380px, calc(100vw - 24px)); max-height: min(70vh, 520px); overflow: auto; z-index: 30;
+  background: var(--card); border: 1px solid var(--line2); border-radius: 16px; box-shadow: 0 24px 60px -18px rgba(0,0,0,.6); transform-origin: top right; animation: panelIn .18s var(--ease) both; }
+.note-panel.closing { animation: panelOut .14s ease-in both; }
+@keyframes panelIn { from { opacity: 0; transform: translateY(-6px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes panelOut { to { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.note-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--card); }
+.note-list { list-style: none; margin: 0; padding: 6px; }
+.note-row { display: flex; gap: 12px; align-items: flex-start; padding: 11px 10px; border-radius: 12px; transition: background-color .18s; }
+.note-row:hover { background: var(--hover); }
+.note-row > .blink-dot, .note-row > .quiet-dot { margin-top: 6px; }
+.quiet-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line2); flex: none; }
+.note-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.note-pj { font-weight: 700; letter-spacing: .05em; color: var(--accent); text-decoration: none; }
+.note-name { overflow-wrap: anywhere; }
+.note-what { font-size: 0.85rem; color: var(--muted); }
+.note-when { font-size: 0.74rem; color: var(--muted); }
+.note-empty { padding: 28px 18px; text-align: center; color: var(--muted); margin: 0; }
+
+@media (max-width: 720px) {
+  .bell-wrap { position: static; }
+  .note-panel { position: fixed; left: 12px; right: 12px; top: 68px; width: auto; transform-origin: top center; }
+}
+
+/* choice dialog (two ways forward from Factory) */
+.choices { display: grid; gap: 10px; margin-top: 14px; }
+.choice { display: grid; gap: 3px; text-align: left; padding: 13px 15px; border-radius: 12px; cursor: pointer; background: var(--bg2); border: 1px solid var(--line2); color: var(--text);
+  transition: border-color .18s, background-color .18s, transform .12s; }
+.choice:hover { border-color: var(--accent); }
+.choice:active { transform: scale(.99); }
+.choice.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg2)); box-shadow: 0 0 0 1px var(--accent); }
+.choice-title { font-weight: 650; }
+.choice-desc { font-size: 0.85rem; color: var(--muted); }
+
+/* small polish: press feedback, smooth hovers */
+.btn:active, .tab:active, .stat:not(:disabled):active { transform: scale(.98); }
+.list-wrap { animation: fade .25s ease-out both; }
+.icon-btn:active { transform: scale(.94); }

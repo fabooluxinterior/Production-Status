@@ -90,6 +90,26 @@ export function confirmModal({ title, body, confirmText = 'Confirm', cancelText 
   });
 }
 
+// Pick one of several options (used when a stage has more than one way forward).
+export function chooseModal({ title, body, options, confirmText = 'Confirm update' }) {
+  return new Promise((resolve) => {
+    let chosen = null;
+    const ok = el('button', { class: 'btn primary', type: 'button', text: confirmText, disabled: true, onclick: () => m.close(true) });
+    const cancel = el('button', { class: 'btn ghost', type: 'button', text: 'Cancel', onclick: () => m.close(false) });
+    const group = el('div', { class: 'choices', role: 'radiogroup', 'aria-label': title },
+      options.map((o, i) => el('button', {
+        type: 'button', role: 'radio', 'aria-checked': 'false', class: 'choice', 'data-autofocus': i === 0 ? true : false,
+        onclick: (e) => {
+          chosen = o.value;
+          group.querySelectorAll('.choice').forEach((b) => { const on = b === e.currentTarget; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); });
+          ok.disabled = false;
+        },
+      }, el('span', { class: 'choice-title', text: o.title }), el('span', { class: 'choice-desc', text: o.desc }))));
+    const m = openModal({ title, body: [body, group], actions: [cancel, ok] });
+    m.closed.then((done) => resolve(done ? chosen : null));
+  });
+}
+
 // ---------------------------------------------------------------- searchable dropdown
 // items: [{ id, name, email }]. Search by name or email. `value` is the chosen id (or null).
 export function combo({ id, placeholder, emptyText, onChange }) {

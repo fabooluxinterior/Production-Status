@@ -44,7 +44,10 @@ async function call(fn) {
   return res.data;
 }
 
-const decorate = (p) => Object.assign({}, p, { next_status: nextStatus(p.current_status) });
+const decorate = (p) => {
+  const options = Array.isArray(p.next_options) ? p.next_options : [nextStatus(p.current_status)].filter(Boolean);
+  return Object.assign({}, p, { next_options: options, next_status: options[0] || null });
+};
 const decoratePayload = (d) => ({ project: decorate(d.project), history: d.history || [] });
 const ROLE_ORDER = { super_admin: 0, admin: 1, dm: 2, designer: 3 };
 
@@ -92,6 +95,9 @@ export const data = {
   async advance(id, newStatus) {
     return decoratePayload(await call(() => sb.rpc('advance_project', { p_id: id, p_new_status: newStatus })));
   },
+  notifications: () => call(() => sb.rpc('list_notifications')),
+  ackNotification: (id) => call(() => sb.rpc('acknowledge_notification', { p_id: id })),
+  ackAll: () => call(() => sb.rpc('acknowledge_all_notifications')),
   assignable: () => call(() => sb.rpc('assignable_users')),
 
   async users() {
@@ -128,6 +134,8 @@ export function startRealtime(onChange) {
   channel = sb.channel('fbx-live')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, () => onChange('projects'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'project_status_history' }, () => onChange('history'))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, () => onChange('notifications'))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'notification_acks' }, () => onChange('notifications'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, (payload) => onChange('profiles', payload))
     .subscribe();
 }

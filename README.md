@@ -4,8 +4,11 @@ Project management for interior design and production, with a fixed 7-stage work
 Runs entirely online: the site is served by **GitHub Pages**, data and sign-in live in **Supabase**.
 No computer of yours needs to be switched on.
 
-**Workflow (enforced on the server, no skipping, no going back):**
-CHECKING AT R&D → SENT BACK TO DESIGNER → CHECKING AT FACTORY → SENT BACK TO R&D → FINAL SOD PENDING → UNDER PRODUCTION → DISPATCHED
+**Workflow (enforced on the server, no going back):**
+CHECKING AT R&D → SENT BACK TO DESIGNER → CHECKING AT FACTORY → (**Send Back to R&D** or **Final SOD Pending**) → FINAL SOD PENDING → UNDER PRODUCTION → DISPATCHED
+
+After Factory checking there are two choices: Send Back to R&D (alerts the Super Admin, then continues to Final SOD) or go straight to Final SOD Pending.
+Dispatched projects move automatically to **Completed Projects** (nothing is deleted or copied).
 
 **Roles:** Super Admin · Admin · Designer · DM
 
@@ -30,6 +33,13 @@ CHECKING AT R&D → SENT BACK TO DESIGNER → CHECKING AT FACTORY → SENT BACK 
   and pick the Designer and DM from the dropdowns. Project IDs are typed by hand (`PJ-` + digits).
 - Only Super Admin and Admin can advance a project's status, one step at a time.
 - Designers and DMs only see projects assigned to them.
+
+## Attention notifications
+
+- Super Admin is alerted when a project is received by R&D or sent back to R&D.
+- Admin is alerted when a project is received by Factory (and when it goes into production).
+- Alerts blink on the project card and in the bell menu until you acknowledge them or the project moves on.
+  Each person acknowledges for themselves. History (with PJ numbers and times) stays in the bell menu.
 
 ## Security notes
 

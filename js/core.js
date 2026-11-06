@@ -1,6 +1,7 @@
 // Shared application state, page shell (header/nav), theme handling, live updates, logout.
 import { el, icon, initials, toast, ROLE_LABEL } from './util.js';
 import { data, startRealtime, stopRealtime } from './data.js';
+import { bell, loadNotifs, resetNotifs } from './notifications.js';
 
 export const root = document.getElementById('app');
 
@@ -8,7 +9,7 @@ export const state = {
   user: null,
   projects: [],
   loaded: false,
-  filters: { q: '', status: '', pid: '', name: '' },
+  filters: { q: '', status: '', pid: '', name: '', attn: false },
   tab: 'active',
   detail: null,
   saving: 0,        // > 0 while a status change is being saved (live refreshes wait)
@@ -19,8 +20,9 @@ export const state = {
 export function resetState() {
   Object.assign(state, {
     user: null, projects: [], loaded: false, detail: null, saving: 0, refresh: null,
-    filters: { q: '', status: '', pid: '', name: '' }, tab: 'active',
+    filters: { q: '', status: '', pid: '', name: '', attn: false }, tab: 'active',
   });
+  resetNotifs();
 }
 
 export function go(hash) {
@@ -76,6 +78,7 @@ export function shell(active, ...content) {
       el('nav', { class: 'nav', 'aria-label': 'Main' },
         links.map(([key, text, href]) => el('a', { href, class: key === active ? 'active' : '', 'aria-current': key === active ? 'page' : false, text }))),
       el('div', { class: 'header-right' },
+        bell(u.role),
         themeButton(),
         el('a', { class: 'profile-chip', href: '#/profile', title: 'Your profile' },
           el('span', { class: 'avatar', 'aria-hidden': 'true', text: initials(u.name) }),
@@ -91,6 +94,7 @@ export function shell(active, ...content) {
 }
 
 // ---------------------------------------------------------------- live updates
+let liveStarted = false;
 let pingTimer;
 let pollTimer;
 let visibilityBound = false;
@@ -106,7 +110,9 @@ async function selfCheck() {
 }
 
 export function startLive() {
+  if (state.user && !liveStarted) { liveStarted = true; loadNotifs(state.user.role); }
   startRealtime((kind, payload) => {
+    if (state.user && (kind === 'notifications' || kind === 'projects')) loadNotifs(state.user.role);
     if (kind === 'profiles' && payload && payload.new && state.user && payload.new.id === state.user.id) selfCheck();
     clearTimeout(pingTimer);
     pingTimer = setTimeout(() => { if (state.refresh) state.refresh(); }, 250);
@@ -116,18 +122,20 @@ export function startLive() {
     pollTimer = setInterval(() => {
       if (document.hidden) return;
       selfCheck();
+      if (state.user) loadNotifs(state.user.role);
       if (state.refresh) state.refresh();
     }, 60000);
   }
   if (!visibilityBound) {
     visibilityBound = true;
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && state.user) { selfCheck(); if (state.refresh) state.refresh(); }
+      if (!document.hidden && state.user) { selfCheck(); loadNotifs(state.user.role); if (state.refresh) state.refresh(); }
     });
   }
 }
 
 export function stopLive() {
+  liveStarted = false;
   stopRealtime();
   clearInterval(pollTimer);
   pollTimer = null;
