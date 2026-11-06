@@ -1,5 +1,5 @@
 // All talking to Supabase lives here: sign-in, database functions, user management, live updates.
-import { nextStatus } from './util.js';
+import { NEXT } from './util.js';
 
 const CFG = window.FABOOLUX_CONFIG || {};
 export const configured = !!(CFG.supabaseUrl && CFG.supabaseAnonKey && !String(CFG.supabaseUrl).startsWith('PASTE'));
@@ -45,7 +45,7 @@ async function call(fn) {
 }
 
 const decorate = (p) => {
-  const options = Array.isArray(p.next_options) ? p.next_options : [nextStatus(p.current_status)].filter(Boolean);
+  const options = Array.isArray(p.next_options) ? p.next_options : (NEXT[p.current_status] || []);
   return Object.assign({}, p, { next_options: options, next_status: options[0] || null });
 };
 const decoratePayload = (d) => ({ project: decorate(d.project), history: d.history || [] });

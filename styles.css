@@ -492,3 +492,10 @@ td[data-label="Password Management"] .badge { margin-right: 8px; }
 .btn:active, .tab:active, .stat:not(:disabled):active { transform: scale(.98); }
 .list-wrap { animation: fade .25s ease-out both; }
 .icon-btn:active { transform: scale(.94); }
+
+/* ============================================================ login announcement */
+.announce { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; margin: 16px 0 20px; border-radius: 12px; text-align: left;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); border-left-width: 4px; background: color-mix(in srgb, var(--accent) 10%, var(--card)); animation: drop .3s var(--ease) both; }
+.announce .icon { color: var(--accent); margin-top: 2px; width: 20px; height: 20px; }
+.announce-tag { font-size: 0.68rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.announce-text { margin: 2px 0 0; font-size: 0.93rem; }

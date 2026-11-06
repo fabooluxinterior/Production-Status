@@ -100,7 +100,15 @@ create table if not exists public.notifications (
   created_by  uuid references public.profiles (id),
   created_at  timestamptz not null default now()
 );
-create unique index if not exists notifications_event_key on public.notifications (project_id, event);
+-- Each notification belongs to the status change (history row) that caused it, so a project that
+-- returns to Factory or R&D later raises a fresh alert, and repeating the same change can't duplicate it.
+alter table public.notifications add column if not exists history_id bigint references public.project_status_history (id);
+drop trigger if exists notifications_immutable on public.notifications;   -- recreated below
+update public.notifications n set history_id = (
+    select max(h.id) from public.project_status_history h where h.project_id = n.project_id and h.new_status = n.status)
+  where n.history_id is null;
+drop index if exists public.notifications_event_key;
+create unique index if not exists notifications_history_key on public.notifications (history_id);
 create index if not exists notifications_role_idx on public.notifications (target_role, created_at desc);
 
 create table if not exists public.notification_acks (
@@ -268,21 +276,23 @@ begin
           coalesce(p_details, '{}'::jsonb));
 end $$;
 
--- Allowed next stages. After CHECKING AT FACTORY there are two choices; everything else is one step forward.
+-- Allowed next stages. After CHECKING AT FACTORY there are two choices. A project sent back to R&D
+-- returns to the Factory once R&D has made its changes. Everything else is one step forward.
 create or replace function public.next_statuses(p_status text) returns text[]
 language sql immutable as $$
   select case p_status
     when 'CHECKING AT R&D'        then array['SENT BACK TO DESIGNER']
     when 'SENT BACK TO DESIGNER'  then array['CHECKING AT FACTORY']
     when 'CHECKING AT FACTORY'    then array['SENT BACK TO R&D', 'FINAL SOD PENDING']
-    when 'SENT BACK TO R&D'       then array['FINAL SOD PENDING']
+    when 'SENT BACK TO R&D'       then array['CHECKING AT FACTORY']   -- R&D made changes: back to the Factory
     when 'FINAL SOD PENDING'      then array['UNDER PRODUCTION']
     when 'UNDER PRODUCTION'       then array['DISPATCHED']
     else array[]::text[] end
 $$;
 
--- Records the attention events that a status change causes (once per project and event).
-create or replace function public.notify_for_status(p_project bigint, p_status text, p_by uuid) returns void
+-- Records the attention event that a status change causes (once per status change).
+drop function if exists public.notify_for_status(bigint, text, uuid);
+create or replace function public.notify_for_status(p_project bigint, p_status text, p_by uuid, p_history bigint) returns void
 language plpgsql security definer set search_path = public as $$
 declare ev text; role_ text;
 begin
@@ -293,9 +303,9 @@ begin
     ('UNDER PRODUCTION',    'production_started', 'admin')) v(s, e, r)
   where v.s = p_status;
   if ev is null then return; end if;
-  insert into public.notifications (project_id, event, target_role, status, created_by)
-  values (p_project, ev, role_, p_status, p_by)
-  on conflict (project_id, event) do nothing;
+  insert into public.notifications (project_id, event, target_role, status, created_by, history_id)
+  values (p_project, ev, role_, p_status, p_by, p_history)
+  on conflict (history_id) do nothing;
 end $$;
 
 create or replace function public.user_json(p_id uuid) returns jsonb
@@ -389,6 +399,7 @@ declare
   nm   text := regexp_replace(trim(coalesce(p_name, '')), '\s+', ' ', 'g');
   proj public.projects;
   clash text;
+  hid  bigint;
 begin
   perform public.require_role(array['super_admin', 'admin', 'dm']);
   if pid !~ '^PJ-[0-9]{1,6}$' then
@@ -418,8 +429,9 @@ begin
   end;
 
   insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
-  values (proj.id, null, proj.current_status, uid);
-  perform public.notify_for_status(proj.id, proj.current_status, uid);
+  values (proj.id, null, proj.current_status, uid)
+  returning id into hid;
+  perform public.notify_for_status(proj.id, proj.current_status, uid, hid);
   perform public.audit('project.create', 'project', proj.project_id,
                        jsonb_build_object('name', nm, 'designer', p_designer, 'dm', p_dm));
   return public.project_json(proj.id);
@@ -431,6 +443,7 @@ declare
   uid  uuid := auth.uid();
   cur  public.projects;
   opts text[];
+  hid  bigint;
 begin
   perform public.require_role(array['super_admin', 'admin']);
 
@@ -447,8 +460,9 @@ begin
 
   update public.projects set current_status = p_new_status, updated_at = now() where id = p_id;
   insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
-  values (p_id, cur.current_status, p_new_status, uid);
-  perform public.notify_for_status(p_id, p_new_status, uid);
+  values (p_id, cur.current_status, p_new_status, uid)
+  returning id into hid;
+  perform public.notify_for_status(p_id, p_new_status, uid, hid);
   perform public.audit('project.status', 'project', cur.project_id,
                        jsonb_build_object('from', cur.current_status, 'to', p_new_status));
 
@@ -467,7 +481,7 @@ begin
         'id', n.id, 'event', n.event, 'status', n.status, 'created_at', n.created_at,
         'project', p.id, 'project_id', p.project_id, 'project_name', p.project_name,
         'acknowledged_at', a.acked_at,
-        'addressed', p.current_status <> n.status) as x
+        'addressed', exists (select 1 from public.project_status_history h where h.project_id = n.project_id and h.id > n.history_id)) as x
     from public.notifications n
     join public.projects p on p.id = n.project_id
     left join public.notification_acks a on a.notification_id = n.id and a.user_id = auth.uid()
@@ -521,11 +535,12 @@ begin
 end $$;
 
 -- ================================================================ 9. upgrade: attention for projects already waiting
-insert into public.notifications (project_id, event, target_role, status, created_at)
-select p.id, v.e, v.r, p.current_status, p.updated_at
+insert into public.notifications (project_id, event, target_role, status, created_at, history_id)
+select p.id, v.e, v.r, p.current_status, p.updated_at,
+       (select max(h.id) from public.project_status_history h where h.project_id = p.id and h.new_status = p.current_status)
 from public.projects p
 join (values ('CHECKING AT R&D', 'rnd_received', 'super_admin'),
              ('SENT BACK TO R&D', 'rnd_sent_back', 'super_admin'),
              ('CHECKING AT FACTORY', 'factory_received', 'admin'),
              ('UNDER PRODUCTION', 'production_started', 'admin')) v(s, e, r) on v.s = p.current_status
-on conflict (project_id, event) do nothing;
+on conflict (history_id) do nothing;

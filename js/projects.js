@@ -4,7 +4,7 @@ import { go, shell, state } from './core.js';
 import { blink, busy, chooseModal, combo, confirmModal, emptyState, skeletonList, tag } from './ui.js';
 import { acknowledge, attentionFor, loadNotifs, noteText, openNotifs, onNotifs } from './notifications.js';
 import {
-  ACTION, ST_DISPATCHED, ST_FACTORY, ST_PRODUCTION, ST_RND, STATUSES,
+  ACTION, NEXT, ST_DISPATCHED, ST_FACTORY, ST_PRODUCTION, ST_RND, STATUSES,
   el, fmtDate, fmtTime, icon, isDispatched, label, nextStatus, statusIndex, toast,
 } from './util.js';
 
@@ -45,7 +45,12 @@ export async function advanceFlow(project, redraw) {
   let next;
   if (options.length === 1) {
     next = options[0];
-    const ok = await confirmModal({ title: 'Update project status', confirmText: 'Confirm update', body: [...header, note] });
+    const fromRnd = project.current_status === 'SENT BACK TO R&D';
+    const ok = await confirmModal({
+      title: fromRnd ? 'R&D changes done' : 'Update project status',
+      confirmText: fromRnd ? 'Send to Factory' : 'Confirm update',
+      body: [...header, fromRnd ? el('p', { class: 'muted small', text: 'R&D has made the changes. The project goes back to Factory checking and the Admin is alerted. This is recorded in the history.' }) : note],
+    });
     if (!ok) return;
   } else {
     next = await chooseModal({
@@ -65,7 +70,7 @@ export async function advanceFlow(project, redraw) {
 
   const before = { projects: state.projects, detail: state.detail };
   const now = new Date().toISOString();
-  const nextOptions = nextStatus(next) ? (next === 'CHECKING AT FACTORY' ? ['SENT BACK TO R&D', 'FINAL SOD PENDING'] : [nextStatus(next)]) : [];
+  const nextOptions = NEXT[next] || [];
   const optimistic = { ...project, current_status: next, next_options: nextOptions, next_status: nextOptions[0] || null, updated_at: now };
   state.projects = state.projects.map((p) => (p.id === project.id ? optimistic : p));
   if (state.detail && state.detail.project.id === project.id) {
@@ -306,12 +311,13 @@ export function viewProject(id) {
     const steps = el('ol', { class: 'steps', 'aria-label': 'Workflow progress' },
       STATUSES.map((s, i) => {
         const skipped = i < idx && !reached[s];   // e.g. Sent Back to R&D when Factory went straight to Final SOD
-        return el('li', { class: `step ${skipped ? 'skipped' : i < idx ? 'done' : i === idx ? 'current' : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
-          el('span', { class: 'dot', 'aria-hidden': 'true', text: skipped ? '–' : i < idx ? '✓' : String(i + 1) }),
+        const done = i !== idx && !!reached[s];   // reached at some point (also after a return to Factory)
+        return el('li', { class: `step ${skipped ? 'skipped' : done ? 'done' : i === idx ? 'current' : 'upcoming'}`, 'aria-current': i === idx ? 'step' : false },
+          el('span', { class: 'dot', 'aria-hidden': 'true', text: skipped ? '–' : done ? '✓' : String(i + 1) }),
           el('span', { class: 'step-text' },
             el('span', { class: 'step-name', text: label(s) }),
             skipped ? el('span', { class: 'step-date', text: 'Not needed' }) : null,
-            reached[s] && i <= idx ? el('span', { class: 'step-date', text: `${fmtDate(reached[s])}, ${fmtTime(reached[s])}` }) : null));
+            reached[s] ? el('span', { class: 'step-date', text: `${fmtDate(reached[s])}, ${fmtTime(reached[s])}` }) : null));
       }));
     const attention = attentionFor(p.id);
 

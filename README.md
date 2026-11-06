@@ -5,9 +5,10 @@ Runs entirely online: the site is served by **GitHub Pages**, data and sign-in l
 No computer of yours needs to be switched on.
 
 **Workflow (enforced on the server, no going back):**
-CHECKING AT R&D → SENT BACK TO DESIGNER → CHECKING AT FACTORY → (**Send Back to R&D** or **Final SOD Pending**) → FINAL SOD PENDING → UNDER PRODUCTION → DISPATCHED
+CHECKING AT R&D → SENT BACK TO DESIGNER → CHECKING AT FACTORY → (**Send Back to R&D** → back to Factory, or **Final SOD Pending**) → FINAL SOD PENDING → UNDER PRODUCTION → DISPATCHED
 
-After Factory checking there are two choices: Send Back to R&D (alerts the Super Admin, then continues to Final SOD) or go straight to Final SOD Pending.
+After Factory checking there are two choices: Send Back to R&D (alerts the Super Admin) or Final SOD Pending.
+Once R&D has made its changes, the project is sent to the Factory again (the Admin is alerted again) and the same two choices follow. Final SOD, Under Production and Dispatched stay one step each.
 Dispatched projects move automatically to **Completed Projects** (nothing is deleted or copied).
 
 **Roles:** Super Admin · Admin · Designer · DM
@@ -31,7 +32,8 @@ Dispatched projects move automatically to **Completed Projects** (nothing is del
   (temporary password is shown once and must be changed at next sign-in), revoke sessions.
 - Create Designer and DM accounts first; Super Admin, Admin and DM can then create projects
   and pick the Designer and DM from the dropdowns. Project IDs are typed by hand (`PJ-` + digits).
-- Only Super Admin and Admin can advance a project's status, one step at a time.
+- Only Super Admin and Admin can change a project's status, one step at a time.
+- The sign-in page shows an announcement asking people to use their FabSketch email.
 - Designers and DMs only see projects assigned to them.
 
 ## Attention notifications

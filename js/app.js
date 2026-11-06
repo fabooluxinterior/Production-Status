@@ -4,7 +4,7 @@ import { applyTheme, go, logout, resetState, root, startLive, state, themeButton
 import { viewCreate, viewDashboard, viewProject, viewProjects } from './projects.js';
 import { passwordForm, viewProfile, viewUsers } from './users.js';
 import { busy } from './ui.js';
-import { el } from './util.js';
+import { el, icon } from './util.js';
 
 const brandImg = () => el('img', { class: 'login-logo', src: 'logo.webp', alt: 'Faboolux Interiors' });
 
@@ -46,7 +46,12 @@ function viewLogin() {
       pw.focus();
     }
   });
-  authPage(el('h1', { class: 'login-title', text: 'Production Status' }), el('p', { class: 'sub center', text: 'Sign in to continue' }), form);
+  const announce = el('aside', { class: 'announce', 'aria-label': 'Announcement' },
+    icon('info'),
+    el('div', {},
+      el('div', { class: 'announce-tag', text: 'Announcement' }),
+      el('p', { class: 'announce-text' }, 'Please use your ', el('strong', { text: 'FabSketch email' }), ' to log in.')));
+  authPage(el('h1', { class: 'login-title', text: 'Production Status' }), el('p', { class: 'sub center', text: 'Sign in to continue' }), announce, form);
   email.focus();
 }
 
