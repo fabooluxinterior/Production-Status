@@ -15,7 +15,7 @@ function authPage(...content) {
     el('div', { class: 'panel login-card' }, brandImg(), ...content)));
 }
 
-function viewLogin(designer = false) {
+function viewLogin() {
   state.refresh = null;
   const error = el('div', { class: 'error-box', role: 'alert', hidden: true });
   const email = el('input', { id: 'email', class: 'input', type: 'email', autocomplete: 'username', required: true, 'data-autofocus': true });
@@ -49,8 +49,8 @@ function viewLogin(designer = false) {
   });
   authPage(el('h1', { class: 'login-title', text: 'Production Status' }), el('p', { class: 'sub center', text: 'Sign in to continue' }), form);
   email.focus();
-  // Designer sign-in page only: spotlight the email box on every load.
-  if (designer) showAnnouncement(email, 'Login using your FabSketch email');
+  // Everyone: spotlight the email box every time the sign-in page opens (nothing is saved).
+  showAnnouncement(email, 'Login using your FabSketch email');
 }
 
 function viewForcePassword() {
@@ -76,7 +76,7 @@ function route() {
   hideAnnouncement(true);
   const hash = location.hash || '#/';
   if (!state.user) {
-    if (hash === '#/designer') return viewLogin(true);   // the Designers' own sign-in link
+    if (hash === '#/designer') { history.replaceState(null, '', '#/login'); return viewLogin(); }   // old Designer link still works
     if (hash !== '#/login') { state.returnTo = hash; history.replaceState(null, '', '#/login'); }
     return viewLogin();
   }
