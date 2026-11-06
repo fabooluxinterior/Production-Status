@@ -30,7 +30,7 @@ Dispatched projects move automatically to **Completed Projects** (nothing is del
 
 - Only the Super Admin manages users (Users page): add, edit, activate/deactivate, reset password
   (temporary password is shown once and must be changed at next sign-in), revoke sessions.
-- Create Designer and DM accounts first; Super Admin, Admin and DM can then create projects
+- Create Designer and DM accounts first; Super Admin, R&D Department and DM can then create projects (Admin cannot)
   and pick the Designer and DM from the dropdowns. Project IDs are typed by hand (`PJ-` + digits).
 - Only Super Admin and Admin can change a project's status, one step at a time.
 - The sign-in page (everyone) dims the screen, highlights the email box and shows "Login using your FabSketch email" every time it opens, until the first click or key press. Nothing is stored in the browser.

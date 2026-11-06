@@ -404,7 +404,7 @@ end $$;
 create or replace function public.assignable_users() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform public.require_role(array['super_admin', 'rnd', 'admin', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'dm']);
   return jsonb_build_object(
     'designers', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', coalesce(nullif(name, ''), email), 'email', email)
                                             order by lower(name), email), '[]'::jsonb)
@@ -425,7 +425,7 @@ declare
   clash text;
   hid  bigint;
 begin
-  perform public.require_role(array['super_admin', 'rnd', 'admin', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'dm']);
   if pid !~ '^PJ-[0-9]{1,6}$' then
     raise exception 'Project ID must be PJ- followed by 1 to 6 digits, for example PJ-025.';
   end if;

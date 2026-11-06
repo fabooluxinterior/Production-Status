@@ -8,7 +8,7 @@ import {
   el, fmtDate, fmtTime, icon, isDispatched, label, nextStatus, statusIndex, toast,
 } from './util.js';
 
-const canCreate = (role) => role === 'super_admin' || role === 'rnd' || role === 'admin' || role === 'dm';
+const canCreate = (role) => role === 'super_admin' || role === 'rnd' || role === 'dm';   // Admin does not create projects
 const canEditStatus = (role) => role === 'super_admin' || role === 'rnd' || role === 'admin';
 
 // Attention comes from notifications (Super Admin: R&D; Admin: Factory and Production) and stays
