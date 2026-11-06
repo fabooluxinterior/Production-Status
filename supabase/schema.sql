@@ -1,7 +1,33 @@
--- Faboolux Production Status: database setup.
--- Run this ONCE in Supabase: SQL Editor -> New query -> paste -> Run.
+-- Faboolux Production Status: database setup (version 2).
+-- Run in Supabase: SQL Editor -> New query -> paste -> Run.
+-- Safe on a brand-new project AND on one that already ran version 1:
+--   users and logins are kept; old test projects are set aside in *_v1_backup tables (not deleted).
 
--- ---------------------------------------------------------------- tables
+-- ================================================================ 0. upgrade from version 1
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'projects' and column_name = 'designer_email') then
+    drop policy if exists projects_read on public.projects;
+    drop policy if exists history_read on public.project_status_history;
+    drop function if exists public.create_project(text, text, text, text);
+    drop function if exists public.advance_project(bigint, text);
+    drop function if exists public.my_email();
+    drop index if exists public.projects_project_id_ci, public.projects_designer_idx,
+                         public.projects_dm_idx, public.history_project_idx;
+    alter table public.project_status_history rename to project_status_history_v1_backup;
+    alter table public.projects rename to projects_v1_backup;
+    alter index if exists public.projects_pkey rename to projects_v1_backup_pkey;
+    alter index if exists public.project_status_history_pkey rename to project_status_history_v1_backup_pkey;
+    revoke all on public.projects_v1_backup, public.project_status_history_v1_backup from anon, authenticated;
+    if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+      begin alter publication supabase_realtime drop table public.projects_v1_backup; exception when others then null; end;
+      begin alter publication supabase_realtime drop table public.project_status_history_v1_backup; exception when others then null; end;
+    end if;
+  end if;
+end $$;
+
+-- ================================================================ 1. tables
 
 create table if not exists public.profiles (
   id         uuid primary key references auth.users (id) on delete cascade,
@@ -10,23 +36,34 @@ create table if not exists public.profiles (
   is_active  boolean not null default true,
   created_at timestamptz not null default now()
 );
+alter table public.profiles add column if not exists name text not null default '' check (char_length(name) <= 100);
+alter table public.profiles add column if not exists must_change_password boolean not null default false;
+alter table public.profiles add column if not exists theme text not null default 'dark' check (theme in ('dark', 'light'));
+alter table public.profiles add column if not exists updated_at timestamptz not null default now();
+
+update public.profiles
+   set name = case when role = 'super_admin' then 'Super Admin' else initcap(split_part(email, '@', 1)) end
+ where name = '';
 
 create table if not exists public.projects (
-  id             bigint generated always as identity primary key,
-  project_name   text not null check (char_length(project_name) between 1 and 120),
-  project_id     text not null check (project_id ~ '^[A-Za-z0-9][A-Za-z0-9._/ -]{0,39}$'),
-  designer_email text not null references public.profiles (email),
-  dm_email       text not null references public.profiles (email),
-  current_status text not null default 'CHECKING AT R&D' check (current_status in (
+  id               bigint generated always as identity primary key,
+  project_id       text not null check (project_id ~ '^PJ-[0-9]{1,6}$'),
+  project_name     text not null check (char_length(project_name) between 1 and 120),
+  designer_user_id uuid not null references public.profiles (id),
+  dm_user_id       uuid not null references public.profiles (id),
+  current_status   text not null default 'CHECKING AT R&D' check (current_status in (
     'CHECKING AT R&D', 'SENT BACK TO DESIGNER', 'CHECKING AT FACTORY', 'SENT BACK TO R&D',
     'FINAL SOD PENDING', 'UNDER PRODUCTION', 'DISPATCHED')),
-  created_by     uuid not null references public.profiles (id),
-  created_at     timestamptz not null default now(),
-  updated_at     timestamptz not null default now()
+  created_by       uuid not null references public.profiles (id),
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
 );
-create unique index if not exists projects_project_id_ci on public.projects (lower(project_id));
-create index if not exists projects_designer_idx on public.projects (designer_email);
-create index if not exists projects_dm_idx on public.projects (dm_email);
+-- PJ-025 and PJ-25 are the same number, so they count as duplicates.
+create unique index if not exists projects_project_id_key on public.projects (project_id);
+create unique index if not exists projects_project_id_num on public.projects (((substring(project_id from 4))::bigint));
+create index if not exists projects_designer_idx on public.projects (designer_user_id);
+create index if not exists projects_dm_idx on public.projects (dm_user_id);
+create index if not exists projects_status_idx on public.projects (current_status);
 
 create table if not exists public.project_status_history (
   id              bigint generated always as identity primary key,
@@ -35,42 +72,140 @@ create table if not exists public.project_status_history (
   new_status      text not null check (new_status in (
     'CHECKING AT R&D', 'SENT BACK TO DESIGNER', 'CHECKING AT FACTORY', 'SENT BACK TO R&D',
     'FINAL SOD PENDING', 'UNDER PRODUCTION', 'DISPATCHED')),
-  updated_by      uuid not null references public.profiles (id),
-  updated_at      timestamptz not null default now()
+  changed_by      uuid not null references public.profiles (id),
+  changed_at      timestamptz not null default now()
 );
-create index if not exists history_project_idx on public.project_status_history (project_id);
+create index if not exists history_project_idx on public.project_status_history (project_id, id);
 
--- ---------------------------------------------------------------- who is calling?
+create table if not exists public.audit_log (
+  id          bigint generated always as identity primary key,
+  actor_id    uuid,
+  actor_email text,
+  action      text not null,
+  target_type text,
+  target_id   text,
+  details     jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+create index if not exists audit_created_idx on public.audit_log (created_at desc);
+
+-- ================================================================ 2. who is calling?
+-- my_role() is NULL (= no access to anything) when the person is deactivated, must still
+-- change a temporary password, or their login session was revoked.
 
 create or replace function public.my_role() returns text
 language sql stable security definer set search_path = public as $$
-  select role from public.profiles where id = auth.uid() and is_active
+  select p.role from public.profiles p
+  where p.id = auth.uid() and p.is_active and not p.must_change_password
+    and ((auth.jwt() ->> 'session_id') is null
+         or exists (select 1 from auth.sessions s where s.id = ((auth.jwt() ->> 'session_id')::uuid)))
 $$;
 
-create or replace function public.my_email() returns text
+create or replace function public.require_role(p_roles text[]) returns text
+language plpgsql stable security definer set search_path = public as $$
+declare r text := public.my_role();
+begin
+  if r is null then raise exception 'AUTH_REQUIRED: Please sign in again.'; end if;
+  if not (r = any (p_roles)) then raise exception 'You don''t have permission to do that.'; end if;
+  return r;
+end $$;
+
+create or replace function public.project_visible(p_designer uuid, p_dm uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select email from public.profiles where id = auth.uid() and is_active
+  select case public.my_role()
+    when 'super_admin' then true
+    when 'admin' then true
+    when 'designer' then p_designer = auth.uid()
+    when 'dm' then p_dm = auth.uid()
+    else false end
 $$;
 
--- ---------------------------------------------------------------- row level security
+create or replace function public.session_alive(p_session uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select p_session is null or exists (select 1 from auth.sessions s where s.id = p_session)
+$$;
+
+create or replace function public.revoke_user_sessions(p_user uuid, p_keep uuid default null) returns void
+language sql security definer set search_path = public as $$
+  delete from auth.sessions where user_id = p_user and (p_keep is null or id <> p_keep)
+$$;
+
+-- ================================================================ 3. integrity triggers
+
+create or replace function public.guard_profile_change() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.role is distinct from old.role then
+    if old.role = 'super_admin' or new.role = 'super_admin' then
+      raise exception 'The Super Admin role can''t be changed.';
+    end if;
+    if exists (select 1 from public.projects where designer_user_id = old.id or dm_user_id = old.id) then
+      raise exception 'This user is assigned to projects, so their role can''t be changed. Deactivate them instead.';
+    end if;
+  end if;
+  new.updated_at := now();
+  return new;
+end $$;
+drop trigger if exists profiles_guard on public.profiles;
+create trigger profiles_guard before update on public.profiles
+  for each row execute function public.guard_profile_change();
+
+create or replace function public.check_project_row() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if tg_op = 'UPDATE' then
+    if new.project_id is distinct from old.project_id then
+      raise exception 'A Project ID can''t be changed once it is created.';
+    end if;
+  else
+    if not exists (select 1 from public.profiles where id = new.designer_user_id and role = 'designer') then
+      raise exception 'The Designer must be a user with the Designer role.';
+    end if;
+    if not exists (select 1 from public.profiles where id = new.dm_user_id and role = 'dm') then
+      raise exception 'The DM must be a user with the DM role.';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists projects_check on public.projects;
+create trigger projects_check before insert or update on public.projects
+  for each row execute function public.check_project_row();
+
+-- History and audit rows can never be edited or deleted by anyone.
+create or replace function public.block_modification() returns trigger
+language plpgsql as $$
+begin
+  raise exception '% is permanent and can''t be modified.', tg_table_name;
+end $$;
+drop trigger if exists history_immutable on public.project_status_history;
+create trigger history_immutable before update or delete on public.project_status_history
+  for each row execute function public.block_modification();
+drop trigger if exists history_no_truncate on public.project_status_history;
+create trigger history_no_truncate before truncate on public.project_status_history
+  for each statement execute function public.block_modification();
+drop trigger if exists audit_immutable on public.audit_log;
+create trigger audit_immutable before update or delete on public.audit_log
+  for each row execute function public.block_modification();
+drop trigger if exists audit_no_truncate on public.audit_log;
+create trigger audit_no_truncate before truncate on public.audit_log
+  for each statement execute function public.block_modification();
+
+-- ================================================================ 4. row level security
 -- Browsers can only READ. Every change goes through the functions below or the admin-users function.
 
 alter table public.profiles enable row level security;
 alter table public.projects enable row level security;
 alter table public.project_status_history enable row level security;
+alter table public.audit_log enable row level security;
 
 drop policy if exists profiles_read on public.profiles;
 create policy profiles_read on public.profiles for select to authenticated using (
-  id = auth.uid()
-  or public.my_role() = 'super_admin'
-  or (public.my_role() = 'admin' and role in ('designer', 'dm'))
+  id = auth.uid() or public.my_role() = 'super_admin'
 );
 
 drop policy if exists projects_read on public.projects;
 create policy projects_read on public.projects for select to authenticated using (
-  public.my_role() in ('super_admin', 'admin')
-  or (public.my_role() = 'designer' and designer_email = public.my_email())
-  or (public.my_role() = 'dm' and dm_email = public.my_email())
+  public.project_visible(designer_user_id, dm_user_id)
 );
 
 drop policy if exists history_read on public.project_status_history;
@@ -78,54 +213,148 @@ create policy history_read on public.project_status_history for select to authen
   exists (select 1 from public.projects p where p.id = project_status_history.project_id)
 );
 
+drop policy if exists audit_read on public.audit_log;
+create policy audit_read on public.audit_log for select to authenticated using (public.my_role() = 'super_admin');
+
 revoke all on all tables in schema public from anon, authenticated;
-grant select on public.profiles, public.projects, public.project_status_history to authenticated;
+grant select on public.profiles, public.projects, public.project_status_history, public.audit_log to authenticated;
 
--- ---------------------------------------------------------------- workflow functions
+-- ================================================================ 5. helpers
 
-create or replace function public.create_project(
-  p_name text, p_project_id text, p_designer text, p_dm text
-) returns public.projects
+create or replace function public.audit(p_action text, p_target_type text, p_target_id text, p_details jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.audit_log (actor_id, actor_email, action, target_type, target_id, details)
+  values (auth.uid(), (select email from public.profiles where id = auth.uid()), p_action, p_target_type, p_target_id,
+          coalesce(p_details, '{}'::jsonb));
+end $$;
+
+create or replace function public.user_json(p_id uuid) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object('id', u.id, 'name', coalesce(nullif(u.name, ''), u.email), 'email', u.email)
+  from public.profiles u where u.id = p_id
+$$;
+
+create or replace function public.project_json(p_id bigint) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', p.id, 'project_id', p.project_id, 'project_name', p.project_name,
+    'current_status', p.current_status,
+    'designer', public.user_json(p.designer_user_id),
+    'dm', public.user_json(p.dm_user_id),
+    'created_by', public.user_json(p.created_by),
+    'created_at', p.created_at, 'updated_at', p.updated_at)
+  from public.projects p where p.id = p_id
+$$;
+
+create or replace function public.history_json(p_id bigint) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'previous_status', h.previous_status, 'new_status', h.new_status,
+      'changed_at', h.changed_at, 'by', public.user_json(h.changed_by)) order by h.id), '[]'::jsonb)
+  from public.project_status_history h where h.project_id = p_id
+$$;
+
+-- ================================================================ 6. functions the website calls
+
+create or replace function public.my_profile() returns jsonb
+language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'id', p.id, 'name', coalesce(nullif(p.name, ''), p.email), 'email', p.email, 'role', p.role,
+    'is_active', p.is_active, 'must_change_password', p.must_change_password, 'theme', p.theme,
+    'created_at', p.created_at,
+    'session_valid', ((auth.jwt() ->> 'session_id') is null
+                      or exists (select 1 from auth.sessions s where s.id = ((auth.jwt() ->> 'session_id')::uuid))))
+  from public.profiles p where p.id = auth.uid()
+$$;
+
+create or replace function public.set_my_theme(p_theme text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then raise exception 'AUTH_REQUIRED: Please sign in again.'; end if;
+  if p_theme not in ('dark', 'light') then raise exception 'Unknown theme.'; end if;
+  update public.profiles set theme = p_theme where id = auth.uid();
+end $$;
+
+create or replace function public.list_projects() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+  return (select coalesce(jsonb_agg(public.project_json(p.id) order by p.updated_at desc, p.id desc), '[]'::jsonb)
+          from public.projects p
+          where public.project_visible(p.designer_user_id, p.dm_user_id));
+end $$;
+
+create or replace function public.get_project(p_id bigint) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare p public.projects;
+begin
+  perform public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+  select * into p from public.projects where id = p_id;
+  if not found or not public.project_visible(p.designer_user_id, p.dm_user_id) then
+    raise exception 'Project not found.';
+  end if;
+  return jsonb_build_object('project', public.project_json(p.id), 'history', public.history_json(p.id));
+end $$;
+
+create or replace function public.assignable_users() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public.require_role(array['super_admin', 'admin', 'dm']);
+  return jsonb_build_object(
+    'designers', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', coalesce(nullif(name, ''), email), 'email', email)
+                                            order by lower(name), email), '[]'::jsonb)
+                  from public.profiles where role = 'designer' and is_active),
+    'dms',       (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', coalesce(nullif(name, ''), email), 'email', email)
+                                            order by lower(name), email), '[]'::jsonb)
+                  from public.profiles where role = 'dm' and is_active));
+end $$;
+
+create or replace function public.create_project(p_project_id text, p_name text, p_designer uuid, p_dm uuid)
+returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   uid  uuid := auth.uid();
+  pid  text := upper(trim(coalesce(p_project_id, '')));
   nm   text := regexp_replace(trim(coalesce(p_name, '')), '\s+', ' ', 'g');
-  pid  text := trim(coalesce(p_project_id, ''));
-  d    text := lower(trim(coalesce(p_designer, '')));
-  m    text := lower(trim(coalesce(p_dm, '')));
   proj public.projects;
+  clash text;
 begin
-  if public.my_role() is null or public.my_role() not in ('super_admin', 'admin') then
-    raise exception 'You don''t have permission to do that.';
+  perform public.require_role(array['super_admin', 'admin', 'dm']);
+  if pid !~ '^PJ-[0-9]{1,6}$' then
+    raise exception 'Project ID must be PJ- followed by 1 to 6 digits, for example PJ-025.';
   end if;
   if nm = '' or char_length(nm) > 120 then
     raise exception 'Enter a project name (up to 120 characters).';
   end if;
-  if pid !~ '^[A-Za-z0-9][A-Za-z0-9._/ -]{0,39}$' then
-    raise exception 'Project ID may use letters, numbers, spaces and . _ - / (up to 40 characters).';
+  if p_designer is null or not exists (select 1 from public.profiles where id = p_designer and role = 'designer' and is_active) then
+    raise exception 'Choose a registered, active Designer.';
   end if;
-  if not exists (select 1 from public.profiles where email = d and role = 'designer' and is_active) then
-    raise exception '% is not a registered, active Designer. Add them under Team first.', d;
+  if p_dm is null or not exists (select 1 from public.profiles where id = p_dm and role = 'dm' and is_active) then
+    raise exception 'Choose a registered, active DM.';
   end if;
-  if not exists (select 1 from public.profiles where email = m and role = 'dm' and is_active) then
-    raise exception '% is not a registered, active DM. Add them under Team first.', m;
-  end if;
-  if exists (select 1 from public.projects where lower(project_id) = lower(pid)) then
-    raise exception 'A project with this Project ID already exists.';
+  select project_id into clash from public.projects
+   where substring(project_id from 4)::bigint = substring(pid from 4)::bigint;
+  if found then
+    raise exception 'Project ID % is already in use (%).', pid, clash;
   end if;
 
-  insert into public.projects (project_name, project_id, designer_email, dm_email, created_by)
-  values (nm, pid, d, m, uid)
-  returning * into proj;
+  begin
+    insert into public.projects (project_id, project_name, designer_user_id, dm_user_id, created_by)
+    values (pid, nm, p_designer, p_dm, uid)
+    returning * into proj;
+  exception when unique_violation then
+    raise exception 'Project ID % is already in use.', pid;
+  end;
 
-  insert into public.project_status_history (project_id, previous_status, new_status, updated_by)
+  insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
   values (proj.id, null, proj.current_status, uid);
-
-  return proj;
+  perform public.audit('project.create', 'project', proj.project_id,
+                       jsonb_build_object('name', nm, 'designer', p_designer, 'dm', p_dm));
+  return public.project_json(proj.id);
 end $$;
 
-create or replace function public.advance_project(p_id bigint, p_new_status text)
-returns public.projects
+create or replace function public.advance_project(p_id bigint, p_new_status text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare
   uid      uuid := auth.uid();
@@ -134,14 +363,10 @@ declare
   cur      public.projects;
   i        int;
 begin
-  if public.my_role() is null or public.my_role() not in ('super_admin', 'admin') then
-    raise exception 'You don''t have permission to do that.';
-  end if;
+  perform public.require_role(array['super_admin', 'admin']);
 
-  select * into cur from public.projects where id = p_id for update;  -- row lock: no double-advance
-  if not found then
-    raise exception 'Project not found.';
-  end if;
+  select * into cur from public.projects where id = p_id for update;   -- row lock: no double-advance
+  if not found then raise exception 'Project not found.'; end if;
 
   i := array_position(statuses, cur.current_status);
   if i = array_length(statuses, 1) then
@@ -151,31 +376,32 @@ begin
     raise exception 'The project''s status has changed or that stage can''t be skipped to. Refresh and try again.';
   end if;
 
-  update public.projects set current_status = p_new_status, updated_at = now()
-  where id = p_id returning * into cur;
-
-  insert into public.project_status_history (project_id, previous_status, new_status, updated_by)
+  update public.projects set current_status = p_new_status, updated_at = now() where id = p_id;
+  insert into public.project_status_history (project_id, previous_status, new_status, changed_by)
   values (p_id, statuses[i], p_new_status, uid);
+  perform public.audit('project.status', 'project', cur.project_id,
+                       jsonb_build_object('from', statuses[i], 'to', p_new_status));
 
-  return cur;
+  return jsonb_build_object('project', public.project_json(p_id), 'history', public.history_json(p_id));
 end $$;
 
-revoke execute on function public.create_project(text, text, text, text) from public, anon;
-revoke execute on function public.advance_project(bigint, text) from public, anon;
-grant execute on function public.create_project(text, text, text, text) to authenticated;
-grant execute on function public.advance_project(bigint, text) to authenticated;
+-- ================================================================ 7. who may run what
 
--- ---------------------------------------------------------------- realtime
--- Lets signed-in browsers receive live changes (still filtered by the read policies above).
+revoke execute on all functions in schema public from public, anon, authenticated;
+grant execute on function public.my_role(), public.project_visible(uuid, uuid) to authenticated;   -- used by the access rules
+grant execute on function
+  public.my_profile(), public.set_my_theme(text), public.list_projects(), public.get_project(bigint),
+  public.assignable_users(), public.create_project(text, text, uuid, uuid), public.advance_project(bigint, text)
+  to authenticated;
+grant execute on function public.session_alive(uuid), public.revoke_user_sessions(uuid, uuid) to service_role;
+
+-- ================================================================ 8. live updates
 
 do $$
 begin
   if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
-    begin
-      alter publication supabase_realtime add table public.projects;
-    exception when duplicate_object then null; end;
-    begin
-      alter publication supabase_realtime add table public.project_status_history;
-    exception when duplicate_object then null; end;
+    begin alter publication supabase_realtime add table public.projects; exception when duplicate_object then null; end;
+    begin alter publication supabase_realtime add table public.project_status_history; exception when duplicate_object then null; end;
+    begin alter publication supabase_realtime add table public.profiles; exception when duplicate_object then null; end;
   end if;
 end $$;
