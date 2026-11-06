@@ -3,43 +3,65 @@
 import { data } from './data.js';
 import { NOTE_TEXT, el, fmtDate, fmtTime, icon, toast } from './util.js';
 
-const WATCHERS = ['super_admin', 'admin', 'designer'];
+const WATCHERS = ['super_admin', 'admin', 'designer', 'dm'];
 let items = [];
 let known = new Set();     // ids already seen, so a new arrival can be announced once
 let first = true;
 const subs = new Set();
 
-const emit = () => subs.forEach((f) => f());
+let queued = false;
+const emit = () => {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; subs.forEach((f) => f()); });
+};
 export const onNotifs = (fn) => { subs.add(fn); return () => subs.delete(fn); };
 
-export function resetNotifs() { items = []; known = new Set(); first = true; emit(); }
+export function resetNotifs() { items = []; known = new Set(); first = true; lastSig = ''; emit(); }
 
-export const noteText = (n) => NOTE_TEXT[n.event] || n.event;
+const DM_TEXT = { designer_sent_back: 'Sent back to Designer', designer_final_sod: 'Final SOD pending' };
+export const noteText = (n) => (n.target_role === 'dm' && DM_TEXT[n.event]) || NOTE_TEXT[n.event] || n.event;
 export const allNotifs = () => items;
 // Still needs attention: not acknowledged by me, and the project is still at that stage.
 export const isOpen = (n) => !n.acknowledged_at && !n.addressed;
 export const openNotifs = () => items.filter(isOpen);
 export const attentionFor = (projectPk) => items.find((n) => n.project === projectPk && isOpen(n)) || null;
 
+// Several live events can arrive together: only one request runs at a time, and nothing is redrawn
+// unless the list really changed.
+let loading = false;
+let again = false;
+let lastSig = '';
 export async function loadNotifs(role) {
   if (!WATCHERS.includes(role)) return;
+  if (loading) { again = true; return; }
+  loading = true;
   try {
     const next = await data.notifications();
-    const fresh = next.filter((n) => !known.has(n.id) && isOpen(n));
-    next.forEach((n) => known.add(n.id));
-    items = next;
-    if (!first && fresh.length) {
-      toast(fresh.length === 1 ? `${fresh[0].project_id} · ${noteText(fresh[0])}` : `${fresh.length} new notifications`);
+    const sig = JSON.stringify(next);
+    if (sig !== lastSig) {
+      lastSig = sig;
+      const fresh = next.filter((n) => !known.has(n.id) && isOpen(n));
+      next.forEach((n) => known.add(n.id));
+      items = next;
+      if (!first && fresh.length) {
+        toast(fresh.length === 1 ? `${fresh[0].project_id} · ${noteText(fresh[0])}` : `${fresh.length} new notifications`);
+      }
+      emit();
     }
     first = false;
-    emit();
   } catch (e) { /* keep what is shown; the next live update retries */ }
+  finally {
+    loading = false;
+    if (again) { again = false; loadNotifs(role); }
+  }
 }
 
 export async function acknowledge(id) {
   const before = items;
   const now = new Date().toISOString();
   items = items.map((n) => (n.id === id ? { ...n, acknowledged_at: now } : n));
+  lastSig = '';
   emit();
   try { await data.ackNotification(id); }
   catch (e) { items = before; emit(); toast(`Could not acknowledge: ${e.message}`, true); }
@@ -49,6 +71,7 @@ export async function acknowledgeAll() {
   const before = items;
   const now = new Date().toISOString();
   items = items.map((n) => (n.acknowledged_at ? n : { ...n, acknowledged_at: now }));
+  lastSig = '';
   emit();
   try { await data.ackAll(); }
   catch (e) { items = before; emit(); toast(`Could not acknowledge: ${e.message}`, true); }

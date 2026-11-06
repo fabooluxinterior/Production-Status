@@ -127,7 +127,7 @@ function statTiles(role, all) {
       completed,
     ];
   }
-  if (role === 'designer') {
+  if (role === 'designer' || role === 'dm') {
     return [
       { label: 'My Active Projects', n: active },
       { label: 'My Assigned Projects', n: all.length },
@@ -140,6 +140,17 @@ function statTiles(role, all) {
     { label: 'My Assigned Projects', n: all.length },
     completed,
   ];
+}
+
+// Put `nodes` into `container` in order, touching the page as little as possible:
+// nodes that are already in the right place are left alone (no flicker, animations keep running).
+function reconcile(container, nodes) {
+  let cur = container.firstChild;
+  for (const n of nodes) {
+    if (cur === n) { cur = cur.nextSibling; continue; }
+    container.insertBefore(n, cur);
+  }
+  while (cur) { const next = cur.nextSibling; cur.remove(); cur = next; }
 }
 
 function renderList(mode) {
@@ -160,15 +171,29 @@ function renderList(mode) {
   const toolbar = el('div', { class: 'toolbar' },
     el('div', { class: 'search-wrap' }, icon('search'), search), pidIn, nameIn, statusSel);
 
-  let rendered = new Map();   // what is on screen: lets only new or changed cards animate
+  const cards = new Map();    // project id -> { sig, status, node }: unchanged cards are reused, not rebuilt
+  let listDiv = null;
+  let emptyKey = '';
   let statsShown = false;
+  let statsSig = '';
+  let tabsSig = '';
+  let lastProjects = '';
+  let queued = false;
+  const schedule = () => {    // several changes at once -> one redraw
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; if (page.isConnected) draw(); });
+  };
 
   function draw() {
     if (!state.loaded) return;
     const all = state.projects;
     const completed = state.tab === 'completed';
-    if (statsEl) {
-      statsEl.replaceChildren(...statTiles(u.role, all).map((t, i) => {
+    const tiles = statTiles(u.role, all);
+    const tilesSig = JSON.stringify([tiles, state.filters.status, state.filters.attn]);
+    if (statsEl && tilesSig !== statsSig) {
+      statsSig = tilesSig;
+      statsEl.replaceChildren(...tiles.map((t, i) => {
         const alerting = t.attn ? t.n > 0 : (t.waiting || 0) > 0;
         const watched = t.attn || t.alertText;
         const clickable = t.filter || t.attn || t.completed;
@@ -195,8 +220,9 @@ function renderList(mode) {
       statsShown = true;
     }
     const base = all.filter((p) => (completed ? isDispatched(p) : !isDispatched(p)));
-    if (tabsEl) {
-      const nCompleted = all.filter(isDispatched).length;
+    const nCompleted = all.filter(isDispatched).length;
+    if (tabsEl && tabsSig !== `${completed}|${nCompleted}|${all.length}`) {
+      tabsSig = `${completed}|${nCompleted}|${all.length}`;
       tabsEl.replaceChildren(
         el('button', { type: 'button', role: 'tab', 'aria-selected': String(!completed), class: 'tab' + (!completed ? ' on' : ''), text: `Active (${all.length - nCompleted})`, onclick: () => { state.tab = 'active'; draw(); } }),
         el('button', { type: 'button', role: 'tab', 'aria-selected': String(completed), class: 'tab' + (completed ? ' on' : ''), text: `Completed Projects (${nCompleted})`, onclick: () => { state.tab = 'completed'; state.filters.status = ''; statusSel.value = ''; draw(); } }));
@@ -204,28 +230,46 @@ function renderList(mode) {
     statusSel.hidden = completed;
 
     const shown = applyFilters(base, state.filters);
+    const showEmpty = (key, node) => {
+      if (emptyKey === key) return;
+      emptyKey = key; listDiv = null; cards.clear();
+      listEl.replaceChildren(node());
+    };
     if (!base.length) {
-      listEl.replaceChildren(completed
+      showEmpty(completed ? 'none-completed' : 'none-active', () => (completed
         ? emptyState('No completed projects yet', 'Projects move here automatically once they are dispatched. Their details, assignments and history are kept.')
         : emptyState('No active projects', u.role === 'designer' || u.role === 'dm'
           ? 'Projects assigned to you will appear here.'
           : 'Create a project to get started.',
-        canCreate(u.role) ? el('a', { class: 'btn primary', href: '#/new', text: 'Create Project' }) : null));
+        canCreate(u.role) ? el('a', { class: 'btn primary', href: '#/new', text: 'Create Project' }) : null)));
     } else if (!shown.length) {
-      listEl.replaceChildren(emptyState('No matching projects', 'Try a different search or clear the filters.'));
+      showEmpty('no-match', () => emptyState('No matching projects', 'Try a different search or clear the filters.'));
     } else {
-      const prev = rendered;
-      rendered = new Map(shown.map((p) => [p.id, p.current_status]));
-      listEl.replaceChildren(el('div', { class: 'list' }, shown.map((p, i) => projectCard(p, i, u, prev))));
+      if (!listDiv || emptyKey) {
+        emptyKey = ''; cards.clear();
+        listDiv = el('div', { class: 'list' });
+        listEl.replaceChildren(listDiv);
+      }
+      const keep = new Set();
+      const nodes = shown.map((p, i) => {
+        keep.add(p.id);
+        const attention = attentionFor(p.id);
+        const sig = JSON.stringify([p, attention && attention.id, u.role]);
+        const old = cards.get(p.id);
+        if (old && old.sig === sig) return old.node;
+        const anim = !old ? 'enter' : old.status !== p.current_status ? 'changed' : '';
+        const node = projectCard(p, i, u, attention, anim);
+        cards.set(p.id, { sig, status: p.current_status, node });
+        return node;
+      });
+      for (const id of [...cards.keys()]) if (!keep.has(id)) cards.delete(id);
+      reconcile(listDiv, nodes);
     }
   }
 
-  function projectCard(p, i, user, prev) {
-    const attention = attentionFor(p.id);
-    const before = prev.get(p.id);
-    const anim = before === undefined ? ' enter' : before !== p.current_status ? ' changed' : '';
+  function projectCard(p, i, user, attention, anim) {
     const done = isDispatched(p);
-    const card = el('article', { class: 'card project' + anim + (attention ? ' attn' : ''), 'data-pk': p.id },
+    const card = el('article', { class: 'card project' + (anim ? ` ${anim}` : '') + (attention ? ' attn' : ''), 'data-pk': p.id },
       el('div', { class: 'p-top' },
         el('span', { class: 'pid', text: p.project_id }),
         el('h3', { class: 'pname' }, el('a', { class: 'stretch', href: `#/project/${p.id}`, text: p.project_name })),
@@ -240,6 +284,8 @@ function renderList(mode) {
         metaItem('DM', p.dm.name),
         metaItem(done ? 'Completed' : 'Last Updated', fmtDate(p.updated_at))));
     card.style.setProperty('--i', String(Math.min(i, 10)));
+    // entry animations play once; moving the card later must not replay them
+    card.addEventListener('animationend', (e) => { if (e.target === card) card.classList.remove('enter', 'changed'); });
     return card;
   }
 
@@ -259,7 +305,11 @@ function renderList(mode) {
   const load = async () => {
     if (state.saving) return;
     try {
-      state.projects = await data.projects();
+      const next = await data.projects();
+      const sig = JSON.stringify(next);
+      if (state.loaded && sig === lastProjects) return;      // nothing changed: leave the screen alone
+      lastProjects = sig;
+      state.projects = next;
       state.loaded = true;
       draw();
     } catch (e) {
@@ -267,7 +317,7 @@ function renderList(mode) {
     }
   };
   state.refresh = load;
-  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } draw(); });
+  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } schedule(); });
   if (state.loaded) draw();
   load();
   return page;
@@ -301,9 +351,20 @@ export function viewProject(id) {
   state.detail = null;
   const page = shell('projects', skeletonList(2));
 
+  let lastDraw = '';
+  let queued = false;
+  const schedule = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; if (page.isConnected) draw(); });
+  };
+
   function draw() {
     const d = state.detail;
     if (!d) return;
+    const sigNow = JSON.stringify([d, (attentionFor(d.project.id) || {}).id || null]);
+    if (sigNow === lastDraw) return;           // nothing changed: no rebuild, no flicker
+    lastDraw = sigNow;
     const { project: p, history } = d;
     const idx = statusIndex(p.current_status);
     const reached = {};
@@ -368,7 +429,7 @@ export function viewProject(id) {
     }
   }
   state.refresh = load;
-  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } draw(); });
+  const off = onNotifs(() => { if (!page.isConnected) { off(); return; } schedule(); });
   load();
 }
 

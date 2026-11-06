@@ -60,7 +60,8 @@ export function themeButton() {
     btn.title = dark ? 'Light theme' : 'Dark theme';
   };
   btn.addEventListener('click', () => setTheme(currentTheme() === 'dark' ? 'light' : 'dark'));
-  document.addEventListener('themechange', sync);
+  const onChange = () => { if (!btn.isConnected) document.removeEventListener('themechange', onChange); else sync(); };
+  document.addEventListener('themechange', onChange);
   sync();
   return btn;
 }
