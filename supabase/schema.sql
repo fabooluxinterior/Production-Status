@@ -32,10 +32,12 @@ end $$;
 create table if not exists public.profiles (
   id         uuid primary key references auth.users (id) on delete cascade,
   email      text not null unique check (email = lower(email)),
-  role       text not null check (role in ('super_admin', 'admin', 'designer', 'dm')),
+  role       text not null,
   is_active  boolean not null default true,
   created_at timestamptz not null default now()
 );
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check check (role in ('super_admin', 'admin', 'rnd', 'designer', 'dm'));
 alter table public.profiles add column if not exists name text not null default '' check (char_length(name) <= 100);
 alter table public.profiles add column if not exists must_change_password boolean not null default false;
 alter table public.profiles add column if not exists theme text not null default 'dark' check (theme in ('dark', 'light'));
@@ -147,11 +149,18 @@ begin
   return r;
 end $$;
 
+-- R&D Department sees the same alerts as the Super Admin (R&D alerts); everyone else sees their own.
+create or replace function public.alert_role() returns text
+language sql stable security definer set search_path = public as $$
+  select case public.my_role() when 'rnd' then 'super_admin' else public.my_role() end
+$$;
+
 create or replace function public.project_visible(p_designer uuid, p_dm uuid) returns boolean
 language sql stable security definer set search_path = public as $$
   select case public.my_role()
     when 'super_admin' then true
     when 'admin' then true
+    when 'rnd' then true
     when 'designer' then p_designer = auth.uid()
     when 'dm' then p_dm = auth.uid()
     else false end
@@ -266,7 +275,7 @@ drop policy if exists audit_read on public.audit_log;
 create policy audit_read on public.audit_log for select to authenticated using (public.my_role() = 'super_admin');
 
 drop policy if exists notifications_read on public.notifications;
-create policy notifications_read on public.notifications for select to authenticated using (target_role = public.my_role() and (target_user is null or target_user = auth.uid()));
+create policy notifications_read on public.notifications for select to authenticated using (target_role = public.alert_role() and (target_user is null or target_user = auth.uid()));
 drop policy if exists acks_read on public.notification_acks;
 create policy acks_read on public.notification_acks for select to authenticated using (user_id = auth.uid() and public.my_role() is not null);
 
@@ -374,7 +383,7 @@ end $$;
 create or replace function public.list_projects() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'admin', 'designer', 'dm']);
   return (select coalesce(jsonb_agg(public.project_json(p.id) order by p.updated_at desc, p.id desc), '[]'::jsonb)
           from public.projects p
           where public.project_visible(p.designer_user_id, p.dm_user_id));
@@ -384,7 +393,7 @@ create or replace function public.get_project(p_id bigint) returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 declare p public.projects;
 begin
-  perform public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'admin', 'designer', 'dm']);
   select * into p from public.projects where id = p_id;
   if not found or not public.project_visible(p.designer_user_id, p.dm_user_id) then
     raise exception 'Project not found.';
@@ -395,7 +404,7 @@ end $$;
 create or replace function public.assignable_users() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
 begin
-  perform public.require_role(array['super_admin', 'admin', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'admin', 'dm']);
   return jsonb_build_object(
     'designers', (select coalesce(jsonb_agg(jsonb_build_object('id', id, 'name', coalesce(nullif(name, ''), email), 'email', email)
                                             order by lower(name), email), '[]'::jsonb)
@@ -416,7 +425,7 @@ declare
   clash text;
   hid  bigint;
 begin
-  perform public.require_role(array['super_admin', 'admin', 'dm']);
+  perform public.require_role(array['super_admin', 'rnd', 'admin', 'dm']);
   if pid !~ '^PJ-[0-9]{1,6}$' then
     raise exception 'Project ID must be PJ- followed by 1 to 6 digits, for example PJ-025.';
   end if;
@@ -460,7 +469,7 @@ declare
   opts text[];
   hid  bigint;
 begin
-  perform public.require_role(array['super_admin', 'admin']);
+  perform public.require_role(array['super_admin', 'rnd', 'admin']);
 
   select * into cur from public.projects where id = p_id for update;   -- row lock: no double-advance
   if not found then raise exception 'Project not found.'; end if;
@@ -487,9 +496,9 @@ end $$;
 -- Notifications for the signed-in Super Admin / Admin (their own role only), newest first.
 create or replace function public.list_notifications() returns jsonb
 language plpgsql stable security definer set search_path = public as $$
-declare r text := public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+declare r text := public.require_role(array['super_admin', 'rnd', 'admin', 'designer', 'dm']);
+        ar text := public.alert_role();
 begin
-  if r not in ('super_admin', 'admin', 'designer', 'dm') then return '[]'::jsonb; end if;
   return (select coalesce(jsonb_agg(t.x order by t.created desc, t.nid desc), '[]'::jsonb) from (
     select n.created_at as created, n.id as nid,
       jsonb_build_object(
@@ -500,16 +509,17 @@ begin
     from public.notifications n
     join public.projects p on p.id = n.project_id
     left join public.notification_acks a on a.notification_id = n.id and a.user_id = auth.uid()
-    where n.target_role = r and (n.target_user is null or n.target_user = auth.uid())
+    where n.target_role = ar and (n.target_user is null or n.target_user = auth.uid())
     order by n.created_at desc, n.id desc
     limit 300) t);
 end $$;
 
 create or replace function public.acknowledge_notification(p_id bigint) returns void
 language plpgsql security definer set search_path = public as $$
-declare r text := public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+declare r text := public.require_role(array['super_admin', 'rnd', 'admin', 'designer', 'dm']);
+        ar text := public.alert_role();
 begin
-  if not exists (select 1 from public.notifications where id = p_id and target_role = r and (target_user is null or target_user = auth.uid())) then
+  if not exists (select 1 from public.notifications where id = p_id and target_role = ar and (target_user is null or target_user = auth.uid())) then
     raise exception 'Notification not found.';
   end if;
   insert into public.notification_acks (notification_id, user_id) values (p_id, auth.uid())
@@ -518,17 +528,18 @@ end $$;
 
 create or replace function public.acknowledge_all_notifications() returns void
 language plpgsql security definer set search_path = public as $$
-declare r text := public.require_role(array['super_admin', 'admin', 'designer', 'dm']);
+declare r text := public.require_role(array['super_admin', 'rnd', 'admin', 'designer', 'dm']);
+        ar text := public.alert_role();
 begin
   insert into public.notification_acks (notification_id, user_id)
-  select n.id, auth.uid() from public.notifications n where n.target_role = r and (n.target_user is null or n.target_user = auth.uid())
+  select n.id, auth.uid() from public.notifications n where n.target_role = ar and (n.target_user is null or n.target_user = auth.uid())
   on conflict do nothing;
 end $$;
 
 -- ================================================================ 7. who may run what
 
 revoke execute on all functions in schema public from public, anon, authenticated;
-grant execute on function public.my_role(), public.project_visible(uuid, uuid) to authenticated;   -- used by the access rules
+grant execute on function public.my_role(), public.alert_role(), public.project_visible(uuid, uuid) to authenticated;   -- used by the access rules
 grant execute on function
   public.my_profile(), public.set_my_theme(text), public.list_projects(), public.get_project(bigint),
   public.assignable_users(), public.create_project(text, text, uuid, uuid), public.advance_project(bigint, text),

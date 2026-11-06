@@ -18,7 +18,7 @@ export const LABELS = {
   'UNDER PRODUCTION': 'Under Production',
   'DISPATCHED': 'Dispatched',
 };
-export const ROLE_LABEL = { super_admin: 'Super Admin', admin: 'Admin', designer: 'Designer', dm: 'DM' };
+export const ROLE_LABEL = { super_admin: 'Super Admin', rnd: 'R&D Department', admin: 'Admin', designer: 'Designer', dm: 'DM' };
 
 export const ST_RND = 'CHECKING AT R&D';
 export const ST_FACTORY = 'CHECKING AT FACTORY';

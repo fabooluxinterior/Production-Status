@@ -11,7 +11,7 @@ After Factory checking there are two choices: Send Back to R&D (alerts the Super
 Once R&D has made its changes, the project is sent to the Factory again (the Admin is alerted again) and the same two choices follow. Final SOD, Under Production and Dispatched stay one step each.
 Dispatched projects move automatically to **Completed Projects** (nothing is deleted or copied).
 
-**Roles:** Super Admin · Admin · Designer · DM
+**Roles:** Super Admin · R&D Department · Admin · Designer · DM
 
 ## Setup (in this order)
 
@@ -35,6 +35,11 @@ Dispatched projects move automatically to **Completed Projects** (nothing is del
 - Only Super Admin and Admin can change a project's status, one step at a time.
 - **Designer sign-in link:** give Designers the address `<your site>/#/designer`. That page dims the screen, highlights the email box and shows "Login using your FabSketch email" every time it opens, until the first click or key press. The normal sign-in page (`<your site>/`) shows no announcement. Nothing is stored in the browser.
 - Designers and DMs only see projects assigned to them.
+
+## R&D Department role
+
+Has everything the Super Admin has on projects: sees all projects, creates projects, changes status, gets the R&D alerts (same as the Super Admin, acknowledged separately).
+It cannot open the Users page or add, edit, deactivate or reset users. Only the Super Admin creates this account (Users → Add user → role R&D Department).
 
 ## Attention notifications
 

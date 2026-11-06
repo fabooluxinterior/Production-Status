@@ -3,7 +3,7 @@
 import { data } from './data.js';
 import { NOTE_TEXT, el, fmtDate, fmtTime, icon, toast } from './util.js';
 
-const WATCHERS = ['super_admin', 'admin', 'designer', 'dm'];
+const WATCHERS = ['super_admin', 'rnd', 'admin', 'designer', 'dm'];
 let items = [];
 let known = new Set();     // ids already seen, so a new arrival can be announced once
 let first = true;

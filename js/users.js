@@ -100,6 +100,7 @@ export function viewUsers() {
     const role = el('select', { id: 'u-role', class: 'input', disabled: isSuper },
       isSuper ? el('option', { value: 'super_admin', text: 'Super Admin' }) : [
         el('option', { value: 'admin', text: 'Admin' }),
+        el('option', { value: 'rnd', text: 'R&D Department' }),
         el('option', { value: 'designer', text: 'Designer' }),
         el('option', { value: 'dm', text: 'DM' }),
       ]);

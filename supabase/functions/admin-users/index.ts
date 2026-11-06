@@ -2,7 +2,7 @@
 // User management. It needs the service-role key (injected automatically by Supabase, never in the website).
 //
 // Super Admin only:
-//   { action: "create", name, email, role, password? }            role = admin | designer | dm
+//   { action: "create", name, email, role, password? }            role = admin | rnd | designer | dm
 //   { action: "update", user_id, name?, email?, role? }
 //   { action: "set_active", user_id, is_active }
 //   { action: "reset_password", user_id, password? }              blank = generate; user must change it at next login
@@ -21,7 +21,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const ROLES = ["admin", "designer", "dm"];
+const ROLES = ["admin", "rnd", "designer", "dm"];
 const PROFILE_COLS = "id, name, email, role, is_active, must_change_password, created_at";
 
 function generatePassword(length = 14): string {
@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
       if (!name || name.length > 100) return json({ error: "Enter the user's name (up to 100 characters)." }, 422);
       const email = String(body.email ?? "").trim().toLowerCase();
       if (email.length > 254 || !EMAIL_RE.test(email)) return json({ error: "Enter a valid email address." }, 422);
-      if (!ROLES.includes(body.role)) return json({ error: "Choose Admin, Designer or DM." }, 403);
+      if (!ROLES.includes(body.role)) return json({ error: "Choose Admin, R&D Department, Designer or DM." }, 403);
       const supplied = body.password ? checkPassword(body.password) : "";
       if (supplied === null) return json({ error: "Password must be 8 to 72 characters." }, 422);
       const password = supplied || generatePassword();
@@ -161,7 +161,7 @@ Deno.serve(async (req) => {
       }
       if (body.role !== undefined && body.role !== target.role) {
         if (isSelf || target.role === "super_admin") return json({ error: "The Super Admin role can't be changed." }, 403);
-        if (!ROLES.includes(body.role)) return json({ error: "Choose Admin, Designer or DM." }, 403);
+        if (!ROLES.includes(body.role)) return json({ error: "Choose Admin, R&D Department, Designer or DM." }, 403);
         patch.role = body.role;
       }
       if (Object.keys(patch).length === 0) {

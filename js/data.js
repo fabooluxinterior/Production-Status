@@ -49,7 +49,7 @@ const decorate = (p) => {
   return Object.assign({}, p, { next_options: options, next_status: options[0] || null });
 };
 const decoratePayload = (d) => ({ project: decorate(d.project), history: d.history || [] });
-const ROLE_ORDER = { super_admin: 0, admin: 1, dm: 2, designer: 3 };
+const ROLE_ORDER = { super_admin: 0, rnd: 1, admin: 2, dm: 3, designer: 4 };
 
 export const data = {
   async session() {
