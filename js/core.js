@@ -144,9 +144,10 @@ export function stopLive() {
 }
 
 export async function logout(message) {
+  const wasDesigner = !!state.user && state.user.role === 'designer';
   stopLive();
   await data.signOut();
   resetState();
   if (message) toast(message, true);
-  go('#/login');
+  go(wasDesigner ? '#/designer' : '#/login');   // Designers return to their own sign-in page
 }

@@ -4,7 +4,8 @@ import { applyTheme, go, logout, resetState, root, startLive, state, themeButton
 import { viewCreate, viewDashboard, viewProject, viewProjects } from './projects.js';
 import { passwordForm, viewProfile, viewUsers } from './users.js';
 import { busy } from './ui.js';
-import { el, icon } from './util.js';
+import { el } from './util.js';
+import { hideAnnouncement, showAnnouncement } from './announce.js';
 
 const brandImg = () => el('img', { class: 'login-logo', src: 'logo.webp', alt: 'Faboolux Interiors' });
 
@@ -14,7 +15,7 @@ function authPage(...content) {
     el('div', { class: 'panel login-card' }, brandImg(), ...content)));
 }
 
-function viewLogin() {
+function viewLogin(designer = false) {
   state.refresh = null;
   const error = el('div', { class: 'error-box', role: 'alert', hidden: true });
   const email = el('input', { id: 'email', class: 'input', type: 'email', autocomplete: 'username', required: true, 'data-autofocus': true });
@@ -46,13 +47,10 @@ function viewLogin() {
       pw.focus();
     }
   });
-  const announce = el('aside', { class: 'announce', 'aria-label': 'Announcement' },
-    icon('info'),
-    el('div', {},
-      el('div', { class: 'announce-tag', text: 'Announcement' }),
-      el('p', { class: 'announce-text' }, 'Please use your ', el('strong', { text: 'FabSketch email' }), ' to log in.')));
-  authPage(el('h1', { class: 'login-title', text: 'Production Status' }), el('p', { class: 'sub center', text: 'Sign in to continue' }), announce, form);
+  authPage(el('h1', { class: 'login-title', text: 'Production Status' }), el('p', { class: 'sub center', text: 'Sign in to continue' }), form);
   email.focus();
+  // Designer sign-in page only: spotlight the email box on every load.
+  if (designer) showAnnouncement(email, 'Login using your FabSketch email');
 }
 
 function viewForcePassword() {
@@ -75,8 +73,10 @@ function viewSetup(message) {
 
 function route() {
   state.refresh = null;
+  hideAnnouncement(true);
   const hash = location.hash || '#/';
   if (!state.user) {
+    if (hash === '#/designer') return viewLogin(true);   // the Designers' own sign-in link
     if (hash !== '#/login') { state.returnTo = hash; history.replaceState(null, '', '#/login'); }
     return viewLogin();
   }

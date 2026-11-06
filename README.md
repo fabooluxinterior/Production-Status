@@ -33,7 +33,7 @@ Dispatched projects move automatically to **Completed Projects** (nothing is del
 - Create Designer and DM accounts first; Super Admin, Admin and DM can then create projects
   and pick the Designer and DM from the dropdowns. Project IDs are typed by hand (`PJ-` + digits).
 - Only Super Admin and Admin can change a project's status, one step at a time.
-- The sign-in page shows an announcement asking people to use their FabSketch email.
+- **Designer sign-in link:** give Designers the address `<your site>/#/designer`. That page dims the screen, highlights the email box and shows "Login using your FabSketch email" every time it opens, until the first click or key press. The normal sign-in page (`<your site>/`) shows no announcement. Nothing is stored in the browser.
 - Designers and DMs only see projects assigned to them.
 
 ## Attention notifications
