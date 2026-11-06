@@ -229,7 +229,11 @@ function renderList(mode) {
     }
     statusSel.hidden = completed;
 
-    const shown = applyFilters(base, state.filters);
+    // Projects that need attention come first, in every role, so they are easy to find.
+    const shown = applyFilters(base, state.filters)
+      .map((p, i) => ({ p, i, a: attentionFor(p.id) ? 0 : 1 }))
+      .sort((x, y) => x.a - y.a || x.i - y.i)
+      .map((x) => x.p);
     const showEmpty = (key, node) => {
       if (emptyKey === key) return;
       emptyKey = key; listDiv = null; cards.clear();

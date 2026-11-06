@@ -515,3 +515,7 @@ td[data-label="Password Management"] .badge { margin-right: 8px; }
 .announce-tag { font-size: 0.68rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
 .announce-text { margin: 2px 0 0; font-size: 0.93rem; }
 @media (max-width: 480px) { .detail-grid { grid-template-columns: 1fr; } }
+
+/* bell rings when a new alert arrives */
+.bell.ring .icon { animation: ring .9s var(--ease) both; transform-origin: 50% 20%; }
+@keyframes ring { 0% { transform: rotate(0); } 15% { transform: rotate(16deg); } 30% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 60% { transform: rotate(-7deg); } 80% { transform: rotate(3deg); } 100% { transform: rotate(0); } }

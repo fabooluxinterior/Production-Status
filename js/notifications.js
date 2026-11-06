@@ -17,6 +17,10 @@ const emit = () => {
 };
 export const onNotifs = (fn) => { subs.add(fn); return () => subs.delete(fn); };
 
+// The browser tab shows how many alerts are waiting, so they are noticed from other tabs too.
+const BASE_TITLE = document.title;
+onNotifs(() => { const c = openNotifs().length; document.title = (c ? `(${c}) ` : '') + BASE_TITLE; });
+
 export function resetNotifs() { items = []; known = new Set(); first = true; lastSig = ''; emit(); }
 
 const DM_TEXT = { designer_sent_back: 'Sent back to Designer', designer_final_sod: 'Final SOD pending' };
@@ -45,6 +49,7 @@ export async function loadNotifs(role) {
       next.forEach((n) => known.add(n.id));
       items = next;
       if (!first && fresh.length) {
+        document.dispatchEvent(new Event('fbx-ring'));
         toast(fresh.length === 1 ? `${fresh[0].project_id} · ${noteText(fresh[0])}` : `${fresh.length} new notifications`);
       }
       emit();
@@ -140,6 +145,11 @@ export function bell(role) {
     document.addEventListener('keydown', onKey);
   }
   btn.addEventListener('click', () => (panel ? close() : openPanel()));
+  const ring = () => {
+    if (!btn.isConnected) { document.removeEventListener('fbx-ring', ring); return; }
+    btn.classList.remove('ring'); void btn.offsetWidth; btn.classList.add('ring');
+  };
+  document.addEventListener('fbx-ring', ring);
 
   const off = onNotifs(() => { if (!wrap.isConnected) { off(); document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); return; } sync(); });
   sync();
